@@ -12,7 +12,7 @@ import torch.distributed as dist
 from setup import init_config, init_distributed, init_wandb_and_backup
 from utils.metric_utils import visualize_intermediate_results
 from utils.training_utils import create_optimizer, create_lr_scheduler, auto_resume_job, print_rank0
-
+from model.encoder import load_encoders, preprocess_raw_image
 
 # Load config and read(override) arguments from CLI
 config = init_config()
@@ -71,8 +71,8 @@ total_num_epochs = int(total_param_update_steps * total_batch_size / len(dataset
 module, class_name = config.model.class_name.rsplit(".", 1)
 LVSM = importlib.import_module(module).__dict__[class_name]
 model = LVSM(config).to(ddp_info.device)
-model = DDP(model, device_ids=[ddp_info.local_rank])
-
+model = DDP(model, device_ids=[ddp_info.local_rank], find_unused_parameters=True)
+encoders, encoder_types, architectures = load_encoders(config.model.encoder_type, ddp_info.device, 256)
 
 optimizer, optimized_param_dict, all_param_dict = create_optimizer(
     model,
@@ -107,7 +107,7 @@ optimizer, lr_scheduler, cur_train_step, cur_param_update_step = auto_resume_job
 
 
 enable_grad_scaler = config.training.use_amp and config.training.amp_dtype == "fp16"
-scaler = torch.amp.GradScaler('cuda', enabled=enable_grad_scaler)
+scaler = torch.cuda.amp.GradScaler(enabled=enable_grad_scaler)
 print_rank0(f"Grad scaler enabled: {enable_grad_scaler}")
 dist.barrier()
 
@@ -137,7 +137,7 @@ while cur_train_step <= total_train_steps:
         device_type="cuda",
         dtype=amp_dtype_mapping[config.training.amp_dtype],
     ):
-        ret_dict = model(batch)
+        ret_dict = model(batch, encoders, encoder_types, architectures)
 
     update_grads = (cur_train_step + 1) % grad_accum_steps == 0 or cur_train_step == total_train_steps
     if update_grads:

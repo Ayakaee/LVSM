@@ -286,7 +286,7 @@ class QK_Norm_TransformerBlock(nn.Module):
         use_qk_norm=True,
     ):
         super().__init__()
-        self.norm1 = nn.LayerNorm(dim, bias=ln_bias)
+        self.norm1 = nn.LayerNorm(dim, elementwise_affine=ln_bias)
         self.attn = QK_Norm_SelfAttention(
             dim=dim,
             head_dim=head_dim,
@@ -297,7 +297,7 @@ class QK_Norm_TransformerBlock(nn.Module):
             use_qk_norm=use_qk_norm,
         )
 
-        self.norm2 = nn.LayerNorm(dim, bias=ln_bias)
+        self.norm2 = nn.LayerNorm(dim, elementwise_affine=ln_bias)
         self.mlp = MLP(
             dim=dim,
             mlp_ratio=mlp_ratio,

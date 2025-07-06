@@ -8,10 +8,12 @@ from easydict import EasyDict as edict
 from einops.layers.torch import Rearrange
 from einops import rearrange, repeat
 import traceback
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import camera_utils, data_utils 
-from .transformer import QK_Norm_TransformerBlock, init_weights
-from .loss import LossComputer
-
+from model.transformer import QK_Norm_TransformerBlock, init_weights
+from model.loss import LossComputer
+from model.encoder import preprocess_raw_image
 
 class Images2LatentScene(nn.Module):
     def __init__(self, config):
@@ -27,6 +29,16 @@ class Images2LatentScene(nn.Module):
         
         # Initialize loss computer
         self.loss_computer = LossComputer(config)
+
+        # REPA
+        z_dim = 768
+        self.projectors = nn.Sequential(
+            nn.Linear(self.config.model.transformer.d, config.model.projector_dim),
+            nn.SiLU(),
+            nn.Linear(config.model.projector_dim, config.model.projector_dim),
+            nn.SiLU(),
+            nn.Linear(config.model.projector_dim, z_dim)
+        )
 
     def _create_tokenizer(self, in_channels, patch_size, d_model):
         """Helper function to create a tokenizer with given config"""
@@ -64,7 +76,7 @@ class Images2LatentScene(nn.Module):
         
         # Image token decoder (decode image tokens into pixels)
         self.image_token_decoder = nn.Sequential(
-            nn.LayerNorm(self.config.model.transformer.d, bias=False),
+            nn.LayerNorm(self.config.model.transformer.d, elementwise_affine=False),
             nn.Linear(
                 self.config.model.transformer.d,
                 (self.config.model.target_pose_tokenizer.patch_size**2) * 3,
@@ -100,7 +112,7 @@ class Images2LatentScene(nn.Module):
                 block.apply(init_weights)
                 
         self.transformer_blocks = nn.ModuleList(self.transformer_blocks)
-        self.transformer_input_layernorm = nn.LayerNorm(config.d, bias=False)
+        self.transformer_input_layernorm = nn.LayerNorm(config.d, elementwise_affine=False)
 
 
     def train(self, mode=True):
@@ -189,9 +201,19 @@ class Images2LatentScene(nn.Module):
             return torch.cat([images * 2.0 - 1.0, pose_cond], dim=2)
     
     
-    def forward(self, data_batch, has_target_image=True):
+    def forward(self, data_batch, encoders, encoder_types, architectures, has_target_image=True, detach=False):
 
         input, target = self.process_data(data_batch, has_target_image=has_target_image, target_has_input = self.config.training.target_has_input, compute_rays=True)
+
+        zs_label = []
+        for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
+            raw_image_ = rearrange(target.image, 'b v c h w -> (b v) c h w')
+            raw_image_ = preprocess_raw_image(raw_image_, encoder_type)
+            with torch.no_grad():
+                z = encoder.forward_features(raw_image_)
+                if 'mocov3' in encoder_type: z = z = z[:, 1:] 
+                if 'dinov2' in encoder_type: z = z['x_norm_patchtokens']
+            zs_label.append(z)
 
         # Process input images
         posed_input_images = self.get_posed_input(
@@ -227,6 +249,13 @@ class Images2LatentScene(nn.Module):
             [v_input * n_patches, n_patches], dim=1
         ) # [b * v_target, v*n_patches, d], [b * v_target, n_patches, d]
 
+        # REPA
+        if detach:
+            target_image_tokens_ = target_image_tokens.clone().detach()
+            learned_latents = self.projectors(target_image_tokens_)
+        else:
+            learned_latents = self.projectors(target_image_tokens)
+
         # [b*v_target, n_patches, p*p*3]
         rendered_images = self.image_token_decoder(target_image_tokens)
         
@@ -245,7 +274,9 @@ class Images2LatentScene(nn.Module):
         if has_target_image:
             loss_metrics = self.loss_computer(
                 rendered_images,
-                target.image
+                target.image,
+                learned_latents,
+                zs_label
             )
         else:
             loss_metrics = None

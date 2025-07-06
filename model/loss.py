@@ -10,6 +10,11 @@ import scipy.io
 import os
 from pathlib import Path
 
+def mean_flat(x):
+    """
+    Take the mean over all non-batch dimensions.
+    """
+    return torch.mean(x, dim=list(range(1, len(x.size()))))
 
 # the perception loss code is modified from https://github.com/zhengqili/Crowdsampling-the-Plenoptic-Function/blob/f5216f312cf82d77f8d20454b5eeb3930324630a/models/networks.py#L1478
 # and some parts are based on https://github.com/arthurhero/Long-LRM/blob/main/model/loss.py
@@ -144,6 +149,8 @@ class LossComputer(nn.Module):
         self,
         rendering,
         target,
+        zs_tilde,
+        zs_label,
     ):
         """
         Calculate various losses between rendering and target images.
@@ -179,6 +186,16 @@ class LossComputer(nn.Module):
         perceptual_loss = torch.tensor(0.0).to(l2_loss.device)
         if self.config.training.perceptual_loss_weight > 0.0:
             perceptual_loss = self.perceptual_loss_module(rendering, target)
+        
+        # projection loss
+        proj_loss = 0.
+        bsz = zs_label[0].shape[0]
+        for i, (z, z_tilde) in enumerate(zip(zs_label, zs_tilde)):
+            for j, (z_j, z_tilde_j) in enumerate(zip(z, z_tilde)):
+                z_tilde_j = torch.nn.functional.normalize(z_tilde_j, dim=-1) 
+                z_j = torch.nn.functional.normalize(z_j, dim=-1) 
+                proj_loss += mean_flat(-(z_j * z_tilde_j).sum(dim=-1))
+        proj_loss /= (len(zs_label) * bsz)
 
 
         loss = (
