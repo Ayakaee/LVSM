@@ -40,6 +40,7 @@ training:
   l2_loss_weight: 1.0
   lpips_loss_weight: 0.0
   perceptual_loss_weight: 0.5
+  proj_loss_weight: 0.5
 
   lr: 0.0004
   train_steps: 10000

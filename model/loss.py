@@ -202,6 +202,7 @@ class LossComputer(nn.Module):
             self.config.training.l2_loss_weight * l2_loss
             + self.config.training.lpips_loss_weight * lpips_loss
             + self.config.training.perceptual_loss_weight * perceptual_loss
+            + self.config.training.proj_loss_weight * proj_loss
         )
 
 
@@ -211,6 +212,7 @@ class LossComputer(nn.Module):
             psnr=psnr,
             lpips_loss=lpips_loss,
             perceptual_loss=perceptual_loss,
+            proj_loss = proj_loss,
             norm_perceptual_loss=perceptual_loss / l2_loss, 
             norm_lpips_loss=lpips_loss / l2_loss
         )
