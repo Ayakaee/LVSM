@@ -83,7 +83,7 @@ with torch.no_grad(), torch.autocast(
 ):
     for batch in dataloader:
         batch = {k: v.to(ddp_info.device) if type(v) == torch.Tensor else v for k, v in batch.items()}
-        result = model(batch)
+        result = model(batch, train=False)
         if config.inference.get("render_video", False):
             result= model.module.render_video(result, **config.inference.render_video_config)
         export_results(result, config.inference_out_dir, compute_metrics=config.inference.get("compute_metrics"))

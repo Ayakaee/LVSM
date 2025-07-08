@@ -151,6 +151,7 @@ class LossComputer(nn.Module):
         target,
         zs_tilde,
         zs_label,
+        train=True
     ):
         """
         Calculate various losses between rendering and target images.
@@ -189,13 +190,14 @@ class LossComputer(nn.Module):
         
         # projection loss
         proj_loss = 0.
-        bsz = zs_label[0].shape[0]
-        for i, (z, z_tilde) in enumerate(zip(zs_label, zs_tilde)):
-            for j, (z_j, z_tilde_j) in enumerate(zip(z, z_tilde)):
-                z_tilde_j = torch.nn.functional.normalize(z_tilde_j, dim=-1) 
-                z_j = torch.nn.functional.normalize(z_j, dim=-1) 
-                proj_loss += mean_flat(-(z_j * z_tilde_j).sum(dim=-1))
-        proj_loss /= (len(zs_label) * bsz)
+        if train:
+            bsz = zs_label[0].shape[0]
+            for i, (z, z_tilde) in enumerate(zip(zs_label, zs_tilde)):
+                for j, (z_j, z_tilde_j) in enumerate(zip(z, z_tilde)):
+                    z_tilde_j = torch.nn.functional.normalize(z_tilde_j, dim=-1) 
+                    z_j = torch.nn.functional.normalize(z_j, dim=-1) 
+                    proj_loss += mean_flat(-(z_j * z_tilde_j).sum(dim=-1))
+            proj_loss /= (len(zs_label) * bsz)
 
 
         loss = (

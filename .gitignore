@@ -1,6 +1,7 @@
 metric_checkpoint
 pretrained_models
 preprocessed_data
+configs/*.yaml
 experiments/
 pretrained/
 log/

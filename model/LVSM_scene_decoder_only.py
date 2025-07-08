@@ -201,19 +201,19 @@ class Images2LatentScene(nn.Module):
             return torch.cat([images * 2.0 - 1.0, pose_cond], dim=2)
     
     
-    def forward(self, data_batch, encoders, encoder_types, architectures, has_target_image=True, detach=False):
+    def forward(self, data_batch, encoders=None, encoder_types=None, architectures=None, has_target_image=True, detach=False, train=True):
 
         input, target = self.process_data(data_batch, has_target_image=has_target_image, target_has_input = self.config.training.target_has_input, compute_rays=True)
-
         zs_label = []
-        for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
-            raw_image_ = rearrange(target.image, 'b v c h w -> (b v) c h w')
-            raw_image_ = preprocess_raw_image(raw_image_, encoder_type)
-            with torch.no_grad():
-                z = encoder.forward_features(raw_image_)
-                if 'mocov3' in encoder_type: z = z = z[:, 1:] 
-                if 'dinov2' in encoder_type: z = z['x_norm_patchtokens']
-            zs_label.append(z)
+        if train: 
+            for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
+                raw_image_ = rearrange(target.image, 'b v c h w -> (b v) c h w')
+                raw_image_ = preprocess_raw_image(raw_image_, encoder_type)
+                with torch.no_grad():
+                    z = encoder.forward_features(raw_image_)
+                    if 'mocov3' in encoder_type: z = z = z[:, 1:] 
+                    if 'dinov2' in encoder_type: z = z['x_norm_patchtokens']
+                zs_label.append(z)
 
         # Process input images
         posed_input_images = self.get_posed_input(
@@ -276,7 +276,8 @@ class Images2LatentScene(nn.Module):
                 rendered_images,
                 target.image,
                 learned_latents,
-                zs_label
+                zs_label,
+                train=train
             )
         else:
             loss_metrics = None
