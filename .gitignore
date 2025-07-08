@@ -2,6 +2,7 @@ metric_checkpoint
 pretrained_models
 preprocessed_data
 experiments/
+pretrained/
 log/
 configs/api_keys.yaml
 wandb/
