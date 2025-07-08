@@ -2,6 +2,7 @@ metric_checkpoint
 pretrained_models
 preprocessed_data
 configs/
+data/
 *.sh
 experiments/
 pretrained/
