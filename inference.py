@@ -59,7 +59,7 @@ module, class_name = config.model.class_name.rsplit(".", 1)
 LVSM = importlib.import_module(module).__dict__[class_name]
 model = LVSM(config).to(ddp_info.device)
 model = DDP(model, device_ids=[ddp_info.local_rank])
-model.module.load_ckpt(config.training.checkpoint_dir)
+model.module.load_ckpt(config.inference.checkpoint_dir)
 
 
 if ddp_info.is_main_process:  

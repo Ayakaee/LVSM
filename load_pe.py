@@ -12,8 +12,11 @@ model = pe.VisionTransformer.from_config("PE-Spatial-G14-448", pretrained=True) 
 model = model.cuda()
 
 preprocess = transforms.get_image_transform(model.image_size)
-image = preprocess(Image.open("docs/assets/cat.png")).unsqueeze(0).cuda()
+image_path = 're10k/train/images/21e794f71e31becb/00000.png'
+image = preprocess(Image.open(image_path)).unsqueeze(0).cuda()
 
 out = model.forward_features(image)  # pass layer_idx=<idx> to get a specific layer's output!
 print(out.shape)
 # torch.Size([1, 1025, 1024])
+
+torch.save(out.cpu(), 'pe_feature.pt')

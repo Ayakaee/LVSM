@@ -13,6 +13,7 @@ from setup import init_config, init_distributed, init_wandb_and_backup
 from utils.metric_utils import visualize_intermediate_results
 from utils.training_utils import create_optimizer, create_lr_scheduler, auto_resume_job, print_rank0
 from model.encoder import load_encoders, preprocess_raw_image
+from einops import rearrange, repeat
 
 # Load config and read(override) arguments from CLI
 config = init_config()
@@ -137,7 +138,18 @@ while cur_train_step <= total_train_steps:
         device_type="cuda",
         dtype=amp_dtype_mapping[config.training.amp_dtype],
     ):
-        ret_dict = model(batch, encoders, encoder_types, architectures)
+        input, target = model.module.process_data(batch, has_target_image=True, target_has_input = config.training.target_has_input, compute_rays=True)
+        zs_label = []
+        for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
+            raw_image_ = rearrange(target.image, 'b v c h w -> (b v) c h w')
+            raw_image_ = preprocess_raw_image(raw_image_, encoder_type)
+            with torch.no_grad():
+                z = encoder.forward_features(raw_image_)
+                if 'mocov3' in encoder_type: z = z = z[:, 1:] 
+                if 'dinov2' in encoder_type: z = z['x_norm_patchtokens']
+            zs_label.append(z)
+
+        ret_dict = model(batch, zs_label, input, target)
 
     update_grads = (cur_train_step + 1) % grad_accum_steps == 0 or cur_train_step == total_train_steps
     if update_grads:

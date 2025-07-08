@@ -1,9 +1,11 @@
 metric_checkpoint
 pretrained_models
 preprocessed_data
+perception_models
 configs/
 data/
 *.sh
+*.pt
 experiments/
 pretrained/
 log/

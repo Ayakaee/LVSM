@@ -1,28 +1,33 @@
 import torch
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 from torchvision.transforms import Normalize
+import sys
+sys.path.append('perception_models')
+import core.vision_encoder.pe as pe
+import core.vision_encoder.transforms as transforms
+
 
 CLIP_DEFAULT_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_DEFAULT_STD = (0.26862954, 0.26130258, 0.27577711)
 
+preprocess = None
+
 def preprocess_raw_image(x, enc_type):
     resolution = x.shape[-1]
     if 'clip' in enc_type:
-        x = x / 255.
         x = torch.nn.functional.interpolate(x, 224 * (resolution // 256), mode='bicubic')
         x = Normalize(CLIP_DEFAULT_MEAN, CLIP_DEFAULT_STD)(x)
     elif 'mocov3' in enc_type or 'mae' in enc_type:
-        x = x / 255.
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
     elif 'dinov2' in enc_type:
-        x = x / 255.
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
         x = torch.nn.functional.interpolate(x, 224 * (resolution // 256), mode='bicubic')
+    elif 'PE' in enc_type:
+        x = torch.nn.functional.interpolate(x, size=(224, 224), mode='bilinear', align_corners=False)
+        x = (x - 0.5) / 0.5
     elif 'dinov1' in enc_type:
-        x = x / 255.
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
     elif 'jepa' in enc_type:
-        x = x / 255.
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
         x = torch.nn.functional.interpolate(x, 224 * (resolution // 256), mode='bicubic')
 
@@ -30,6 +35,7 @@ def preprocess_raw_image(x, enc_type):
 
 @torch.no_grad()
 def load_encoders(enc_type, device, resolution=256):
+    global preprocess
     assert (resolution == 256) or (resolution == 512)
     
     enc_names = enc_type.split(',')
@@ -76,6 +82,12 @@ def load_encoders(enc_type, device, resolution=256):
                 encoder.pos_embed.data, [patch_resolution, patch_resolution],
             )
             encoder.head = torch.nn.Identity()
+            encoder = encoder.to(device)
+            encoder.eval()
+        elif 'PE' in encoder_type:
+            preprocess = transforms.get_image_transform(224)
+            model_type = "PE-Spatial-G14-448" if 'Spatial' in encoder_type else 'PE-Core-L14-336'
+            encoder = pe.VisionTransformer.from_config("PE-Spatial-G14-448", pretrained=True)  # Loads from HF
             encoder = encoder.to(device)
             encoder.eval()
         
