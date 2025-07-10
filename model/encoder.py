@@ -10,7 +10,6 @@ import core.vision_encoder.transforms as transforms
 CLIP_DEFAULT_MEAN = (0.48145466, 0.4578275, 0.40821073)
 CLIP_DEFAULT_STD = (0.26862954, 0.26130258, 0.27577711)
 
-preprocess = None
 
 def preprocess_raw_image(x, enc_type):
     resolution = x.shape[-1]
@@ -23,7 +22,7 @@ def preprocess_raw_image(x, enc_type):
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
         x = torch.nn.functional.interpolate(x, 224 * (resolution // 256), mode='bicubic')
     elif 'PE' in enc_type:
-        x = torch.nn.functional.interpolate(x, size=(224, 224), mode='bilinear', align_corners=False)
+        x = torch.nn.functional.interpolate(x, size=(448, 448), mode='bilinear', align_corners=False)
         x = (x - 0.5) / 0.5
     elif 'dinov1' in enc_type:
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
@@ -35,7 +34,7 @@ def preprocess_raw_image(x, enc_type):
 
 @torch.no_grad()
 def load_encoders(enc_type, device, resolution=256):
-    global preprocess
+    print(f'load encoder {enc_type}')
     assert (resolution == 256) or (resolution == 512)
     
     enc_names = enc_type.split(',')
@@ -85,9 +84,8 @@ def load_encoders(enc_type, device, resolution=256):
             encoder = encoder.to(device)
             encoder.eval()
         elif 'PE' in encoder_type:
-            preprocess = transforms.get_image_transform(224)
             model_type = "PE-Spatial-G14-448" if 'Spatial' in encoder_type else 'PE-Core-L14-336'
-            encoder = pe.VisionTransformer.from_config("PE-Spatial-G14-448", pretrained=True)  # Loads from HF
+            encoder = pe.VisionTransformer.from_config(model_type, pretrained=True)  # Loads from HF
             encoder = encoder.to(device)
             encoder.eval()
         
@@ -145,7 +143,8 @@ def load_encoders(enc_type, device, resolution=256):
                 new_state_dict[key[7:]] = value
             encoder.load_state_dict(new_state_dict)
             encoder.forward_features = encoder.forward
-
+        for param in encoder.parameters():
+            param.requires_grad = False
         encoders.append(encoder)
     
     return encoders, encoder_types, architectures

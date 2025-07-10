@@ -190,6 +190,8 @@ class LossComputer(nn.Module):
         
         # projection loss
         proj_loss = 0.
+        if not isinstance(zs_tilde, list):
+            zs_tilde = [zs_tilde]
         if train:
             bsz = zs_label[0].shape[0]
             for i, (z, z_tilde) in enumerate(zip(zs_label, zs_tilde)):

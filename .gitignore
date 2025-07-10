@@ -4,6 +4,7 @@ preprocessed_data
 perception_models
 configs/
 data/
+todo.md
 *.sh
 *.pt
 experiments/

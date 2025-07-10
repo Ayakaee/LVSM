@@ -147,6 +147,7 @@ while cur_train_step <= total_train_steps:
                 z = encoder.forward_features(raw_image_)
                 if 'mocov3' in encoder_type: z = z = z[:, 1:] 
                 if 'dinov2' in encoder_type: z = z['x_norm_patchtokens']
+                if 'PE-Core' in config.model.encoder_type: z = z[:, 1:, :]
             zs_label.append(z)
 
         ret_dict = model(batch, zs_label, input, target)
