@@ -125,7 +125,7 @@ class Images2LatentScene(nn.Module):
 
 
     
-    def pass_layers(self, input_tokens, gradient_checkpoint=False, checkpoint_every=1):
+    def pass_layers(self, input_tokens, target_patch, gradient_checkpoint=False, checkpoint_every=1):
         """
         Helper function to pass input tokens through all transformer blocks with optional gradient checkpointing.
         
@@ -158,6 +158,7 @@ class Images2LatentScene(nn.Module):
             return tokens
             
         # Process layer groups with gradient checkpointing
+        zs_tilde = None
         for start_idx in range(0, num_layers, checkpoint_every):
             end_idx = min(start_idx + checkpoint_every, num_layers)
             input_tokens = torch.utils.checkpoint.checkpoint(
@@ -168,7 +169,11 @@ class Images2LatentScene(nn.Module):
                 use_reentrant=False
             )
             
-        return input_tokens
+            if start_idx + 1 == self.config.training.encode_depth:
+                print(f'REPA at {start_idx+1} layer')
+                zs_tilde = self.projectors(input_tokens[:, target_patch:, :])
+            
+        return input_tokens, zs_tilde
             
 
 
@@ -233,7 +238,7 @@ class Images2LatentScene(nn.Module):
         transformer_input = torch.cat((repeated_input_img_tokens, target_pose_tokens), dim=1)  
         concat_img_tokens = self.transformer_input_layernorm(transformer_input)
         checkpoint_every = self.config.training.grad_checkpoint_every
-        transformer_output_tokens = self.pass_layers(concat_img_tokens, gradient_checkpoint=True, checkpoint_every=checkpoint_every)
+        transformer_output_tokens, zs_tilde = self.pass_layers(concat_img_tokens, v_input * n_patches, gradient_checkpoint=True, checkpoint_every=checkpoint_every)
 
         # Discard the input tokens
         _, target_image_tokens = transformer_output_tokens.split(
@@ -241,11 +246,13 @@ class Images2LatentScene(nn.Module):
         ) # [b * v_target, v*n_patches, d], [b * v_target, n_patches, d]
 
         # REPA
-        if detach:
-            target_image_tokens_ = target_image_tokens.clone().detach()
-            learned_latents = self.projectors(target_image_tokens_)
-        else:
-            learned_latents = self.projectors(target_image_tokens)
+        if zs_tilde is None:
+            print('REPA at last layer')
+            if detach:
+                target_image_tokens_ = target_image_tokens.clone().detach()
+                zs_tilde = self.projectors(target_image_tokens_)
+            else:
+                zs_tilde = self.projectors(target_image_tokens)
 
         # [b*v_target, n_patches, p*p*3]
         rendered_images = self.image_token_decoder(target_image_tokens)
@@ -266,7 +273,7 @@ class Images2LatentScene(nn.Module):
             loss_metrics = self.loss_computer(
                 rendered_images,
                 target.image,
-                learned_latents,
+                zs_tilde,
                 zs_label,
                 train=train
             )

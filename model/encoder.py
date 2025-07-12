@@ -20,7 +20,7 @@ def preprocess_raw_image(x, enc_type):
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
     elif 'dinov2' in enc_type:
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
-        x = torch.nn.functional.interpolate(x, 224 * (resolution // 256), mode='bicubic')
+        x = torch.nn.functional.interpolate(x, 448, mode='bicubic')
     elif 'PE' in enc_type:
         x = torch.nn.functional.interpolate(x, size=(448, 448), mode='bilinear', align_corners=False)
         x = (x - 0.5) / 0.5

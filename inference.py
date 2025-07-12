@@ -63,7 +63,7 @@ model.module.load_ckpt(config.inference.checkpoint_dir)
 
 
 if ddp_info.is_main_process:  
-    print(f"Running inference; save results to: {config.inference_out_dir}")
+    print(f"Running inference; save results to: {config.inference.checkpoint_dir}")
     # avoid multiple processes downloading LPIPS at the same time
     import lpips
     # Suppress the warning by setting weights_only=True
@@ -83,19 +83,20 @@ with torch.no_grad(), torch.autocast(
 ):
     for batch in dataloader:
         batch = {k: v.to(ddp_info.device) if type(v) == torch.Tensor else v for k, v in batch.items()}
-        result = model(batch, train=False)
+        input, target = model.module.process_data(batch, has_target_image=True, target_has_input = config.training.target_has_input, compute_rays=True)
+        result = model(batch, None, input, target, train=False)
         if config.inference.get("render_video", False):
             result= model.module.render_video(result, **config.inference.render_video_config)
-        export_results(result, config.inference_out_dir, compute_metrics=config.inference.get("compute_metrics"))
+        export_results(result, config.inference.checkpoint_dir, compute_metrics=config.inference.get("compute_metrics"))
     torch.cuda.empty_cache()
 
 
 dist.barrier()
 
 if ddp_info.is_main_process and config.inference.get("compute_metrics", False):
-    summarize_evaluation(config.inference_out_dir)
+    summarize_evaluation(config.inference.checkpoint_dir)
     if config.inference.get("generate_website", True):
-        os.system(f"python generate_html.py {config.inference_out_dir}")
+        os.system(f"python generate_html.py {config.inference.checkpoint_dir}")
 dist.barrier()
 dist.destroy_process_group()
 exit(0)
