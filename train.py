@@ -14,6 +14,9 @@ from utils.metric_utils import visualize_intermediate_results
 from utils.training_utils import create_optimizer, create_lr_scheduler, auto_resume_job, print_rank0
 from model.encoder import load_encoders, preprocess_raw_image
 from einops import rearrange, repeat
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
+from datetime import datetime
 
 # Load config and read(override) arguments from CLI
 config = init_config()
@@ -32,6 +35,19 @@ if ddp_info.is_main_process:
     init_wandb_and_backup(config)
 dist.barrier()
 
+# 记录训练开始时间
+training_start_time = datetime.now()
+if ddp_info.is_main_process:
+    print(f"\n{'='*60}")
+    print(f"Training started at: {training_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Training configuration:")
+    print(f"  - Total steps: {config.training.train_steps}")
+    print(f"  - Batch size per GPU: {config.training.batch_size_per_gpu}")
+    print(f"  - World size: {ddp_info.world_size}")
+    print(f"  - Learning rate: {config.training.lr}")
+    print(f"  - Use compile: {config.training.use_compile}")
+    print(f"  - Enable REPA: {config.training.enable_repa}")
+    print(f"{'='*60}\n")
 
 # Set up tf32
 torch.backends.cuda.matmul.allow_tf32 = config.training.use_tf32
@@ -71,7 +87,6 @@ total_train_steps = total_train_steps * grad_accum_steps # real train steps when
 total_batch_size = batch_size_per_gpu * ddp_info.world_size * grad_accum_steps
 total_num_epochs = int(total_param_update_steps * total_batch_size / len(dataset))
 
-
 module, class_name = config.model.class_name.rsplit(".", 1)
 LVSM = importlib.import_module(module).__dict__[class_name]
 model = LVSM(config, logger).to(ddp_info.device)
@@ -89,7 +104,6 @@ optimizer, optimized_param_dict, all_param_dict = create_optimizer(
 )
 optim_param_list = list(optimized_param_dict.values())
 
-
 scheduler_type = config.training.get("scheduler_type", "cosine")
 lr_scheduler = create_lr_scheduler(
     optimizer,
@@ -97,7 +111,6 @@ lr_scheduler = create_lr_scheduler(
     config.training.warmup,
     scheduler_type=scheduler_type,
 )
-
 
 if config.training.get("resume_ckpt", "") != "":
     ckpt_load_path = config.training.resume_ckpt
@@ -112,7 +125,6 @@ optimizer, lr_scheduler, cur_train_step, cur_param_update_step = auto_resume_job
     reset_training_state,
 )
 
-
 enable_grad_scaler = config.training.use_amp and config.training.amp_dtype == "fp16"
 scaler = torch.cuda.amp.GradScaler(enabled=enable_grad_scaler)
 print_rank0(f"Grad scaler enabled: {enable_grad_scaler}")
@@ -121,14 +133,17 @@ dist.barrier()
 start_train_step = cur_train_step
 model.train()
 
+# 记录实际训练开始时间（跳过resume的部分）
+actual_training_start_time = datetime.now()
+if ddp_info.is_main_process:
+    print(f"Actual training started at: {actual_training_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Starting from step: {cur_train_step}")
+    print(f"{'='*60}\n")
+
 while cur_train_step <= total_train_steps:
     tic = time.time()
     cur_epoch = int(cur_train_step * (total_batch_size / grad_accum_steps) // len(dataset) )
     try:
-        # if start_train_step == cur_train_step:
-        #     print(f"Current Rank {ddp_info.local_rank} Restarting training from step {cur_train_step}. Resetting dataloader epoch to {cur_epoch}; might take a while...")
-        #     datasampler.set_epoch(cur_epoch)
-        #     dataloader_iter = iter(dataloader)
         data = next(dataloader_iter)
     except StopIteration:
         print(f"Current Rank {ddp_info.local_rank} Ran out of data. Resetting dataloader epoch to {cur_epoch}; might take a while...")
@@ -137,7 +152,6 @@ while cur_train_step <= total_train_steps:
         data = next(dataloader_iter)
 
     batch = {k: v.to(ddp_info.device) if type(v) == torch.Tensor else v for k, v in data.items()}
-
 
     with torch.autocast(
         enabled=config.training.use_amp,
@@ -282,7 +296,21 @@ while cur_train_step <= total_train_steps:
     if export_inter_results:
         torch.cuda.empty_cache()
         dist.barrier()
-        
+
+# 训练结束，输出时间统计
+training_end_time = datetime.now()
+training_duration = training_end_time - training_start_time
+actual_training_duration = training_end_time - actual_training_start_time
+
+if ddp_info.is_main_process:
+    print(f"\n{'='*60}")
+    print(f"Training completed successfully!")
+    print(f"Training ended at: {training_end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Total duration: {training_duration}")
+    print(f"Actual training duration: {actual_training_duration}")
+    print(f"Final step: {cur_train_step}")
+    print(f"Final param update step: {cur_param_update_step}")
+    print(f"{'='*60}\n")
 
 dist.barrier()
 dist.destroy_process_group()

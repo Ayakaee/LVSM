@@ -50,13 +50,14 @@ class Images2LatentScene(nn.Module):
     def _create_tokenizer(self, in_channels, patch_size, d_model):
         """Helper function to create a tokenizer with given config"""
         self.logger.info(f'create tokenizer with {self.config.model.image_tokenizer.type}')
-        if self.config.model.image_tokenizer.type == 'dino':
+        if self.config.model.image_tokenizer.type == 'PE':
             model_type = 'PE-Core-L14-336'
             encoder = pe.VisionTransformer.from_config(model_type, pretrained=True)
             encoder = encoder.to(device)
             encoder.eval()
             for param in encoder.parameters():
                 param.requires_grad = False
+            
         elif self.config.model.image_tokenizer.type == 'linear':
             tokenizer = nn.Sequential(
                 Rearrange(
@@ -71,6 +72,7 @@ class Images2LatentScene(nn.Module):
                 ),
             )
             tokenizer.apply(init_weights)
+            self.rgb_tokenizer = tokenizer
         else:
             raise NotImplementedError('Tokenizer type not implemented')
 
@@ -204,6 +206,7 @@ class Images2LatentScene(nn.Module):
 
 
     
+    # @torch._dynamo.disable
     def pass_layers(self, tokens, target_patch, gradient_checkpoint=False, checkpoint_every=1):
         """
         concat_tokens: [B, n_input + n_target, D]
@@ -218,7 +221,7 @@ class Images2LatentScene(nn.Module):
         # 1. Self-Attention阶段
         if self.self_attn_blocks is not None:
             for idx, block in enumerate(self.self_attn_blocks):
-                tokens = torch.utils.checkpoint.checkpoint(block, tokens, use_reentrant=False)
+                tokens = torch.utils.checkpoint.checkpoint(block, tokens, use_reentrant=True)
 
         # 2. 拆分input/target tokens
         input_tokens, target_tokens = tokens[:, :target_patch, :], tokens[:, target_patch:, :]
@@ -227,14 +230,14 @@ class Images2LatentScene(nn.Module):
         if self.cross_attn_blocks is not None:
             for idx, block in enumerate(self.cross_attn_blocks):
                 target_tokens = torch.utils.checkpoint.checkpoint(
-                    block, target_tokens, input_tokens, use_reentrant=False
+                    block, target_tokens, input_tokens, use_reentrant=True
                 )
         
         # 4. 交替的 Self-Cross 阶段
         if self.self_cross_blocks is not None:
             for idx, block in enumerate(self.self_cross_blocks):
                 tokens = torch.utils.checkpoint.checkpoint(
-                    block, tokens, target_patch, use_reentrant=False
+                    block, tokens, target_patch, use_reentrant=True
                 )
             input_tokens, target_tokens = tokens[:, :target_patch, :], tokens[:, target_patch:, :]
 
@@ -243,6 +246,7 @@ class Images2LatentScene(nn.Module):
             
 
 
+    # @torch._dynamo.assume_constant_result
     def get_posed_input(self, images=None, ray_o=None, ray_d=None, method="default_plucker"):
         '''
         Args:
