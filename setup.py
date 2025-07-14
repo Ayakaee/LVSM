@@ -17,6 +17,7 @@ import shutil
 import copy
 from pathlib import Path
 import time
+import logging
 
 #################Init Config  Begins#################
 
@@ -114,7 +115,43 @@ def init_distributed(seed=42):
     })
 
 
+def init_logging(log_file, level=logging.INFO, name="LVSM"):
+    """
+    初始化日志系统，日志输出到文件，并设置格式。
+    
+    Args:
+        log_file (str): 日志文件路径
+        level (int): 日志级别，默认 logging.INFO
+        name (str): logger 名称，默认 "LVSM"
+    Returns:
+        logger: 配置好的 logger 实例
+    """
+    log_dir = os.path.dirname(log_file)
+    if log_dir and not os.path.exists(log_dir):
+        os.makedirs(log_dir, exist_ok=True)
 
+    logger = logging.getLogger(name)
+    logger.setLevel(level)
+    logger.propagate = False  # 防止重复输出
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
+    formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)s | %(filename)s:%(lineno)d | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+
+    file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
+    file_handler.setLevel(level)
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(level)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    return logger
 
 def local_backup_src_code(
     src_dir,

@@ -11,15 +11,16 @@ import traceback
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import camera_utils, data_utils 
-from model.transformer import QK_Norm_TransformerBlock, init_weights
+from model.transformer import QK_Norm_SelfAttentionBlock, QK_Norm_CrossAttentionBlock, init_weights
 from model.loss import LossComputer
 from model.encoder import preprocess_raw_image
 
 class Images2LatentScene(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, logger):
         super().__init__()
         self.config = config
         self.process_data = data_utils.ProcessData(config)
+        self.logger = logger
 
         # Initialize both input tokenizers, and output de-tokenizer
         self._init_tokenizers()
@@ -31,33 +32,42 @@ class Images2LatentScene(nn.Module):
         self.loss_computer = LossComputer(config)
 
         # REPA
-        if 'dinov2' in self.config.model.encoder_type:
-            z_dim = 768
-        elif 'PE' in self.config.model.encoder_type:
-            z_dim = 1536 if "Spatial" in self.config.model.encoder_type else 1024
-        self.projectors = nn.Sequential(
-            nn.Linear(self.config.model.transformer.d, config.model.projector_dim),
-            nn.SiLU(),
-            nn.Linear(config.model.projector_dim, config.model.projector_dim),
-            nn.SiLU(),
-            nn.Linear(config.model.projector_dim, z_dim)
-        )
+        if config.training.enable_repa:
+            if 'dinov2' in self.config.model.encoder_type:
+                z_dim = 768
+            elif 'PE' in self.config.model.encoder_type:
+                z_dim = 1536 if "Spatial" in self.config.model.encoder_type else 1024
+            self.projectors = nn.Sequential(
+                nn.Linear(self.config.model.transformer.d, config.model.projector_dim),
+                nn.SiLU(),
+                nn.Linear(config.model.projector_dim, config.model.projector_dim),
+                nn.SiLU(),
+                nn.Linear(config.model.projector_dim, z_dim)
+            )
+        else:
+            self.projectors = None
 
     def _create_tokenizer(self, in_channels, patch_size, d_model):
         """Helper function to create a tokenizer with given config"""
-        tokenizer = nn.Sequential(
-            Rearrange(
-                "b v c (hh ph) (ww pw) -> (b v) (hh ww) (ph pw c)",
+        self.logger.info(f'create tokenizer with {self.config.model.image_tokenizer.type}')
+        if self.config.model.image_tokenizer.type == 'dino':
+            raise NotImplementedError('DINO tokenizer not implemented')
+        elif self.config.model.image_tokenizer.type == 'linear':
+            tokenizer = nn.Sequential(
+                Rearrange(
+                    "b v c (hh ph) (ww pw) -> (b v) (hh ww) (ph pw c)",
                 ph=patch_size,
                 pw=patch_size,
             ),
             nn.Linear(
                 in_channels * (patch_size**2),
                 d_model,
-                bias=False,
-            ),
-        )
-        tokenizer.apply(init_weights)
+                    bias=False,
+                ),
+            )
+            tokenizer.apply(init_weights)
+        else:
+            raise NotImplementedError('Tokenizer type not implemented')
 
         return tokenizer
 
@@ -96,25 +106,66 @@ class Images2LatentScene(nn.Module):
         use_qk_norm = config.get("use_qk_norm", False)
 
         # Create transformer blocks
-        self.transformer_blocks = [
-            QK_Norm_TransformerBlock(
-                config.d, config.d_head, use_qk_norm=use_qk_norm
-            ) for _ in range(config.n_layer)
-        ]
+        if config.mode == 'self':
+            self.logger.info(f'inittransformer with self-attention')
+            self.self_attn_blocks = [
+                QK_Norm_SelfAttentionBlock(
+                    config.d, config.d_head, use_qk_norm=use_qk_norm
+                ) for _ in range(config.n_layer)
+            ]
+            self.cross_attn_blocks = None
+        elif config.mode == 'cross':
+            self.logger.info(f'init transformer with cross-attention')
+            self.cross_attn_blocks = [
+                QK_Norm_CrossAttentionBlock(
+                    config.d, config.d_head, use_qk_norm=use_qk_norm
+                ) for _ in range(config.n_layer)
+            ]
+            self.self_attn_blocks = None
+        else:
+            self.logger.info(f'init transformer with both self- and cross-attention')
+            n_layer = config.n_layer // 2
+            self.self_attn_blocks = nn.ModuleList([
+                QK_Norm_SelfAttentionBlock(
+                    config.d, config.d_head, use_qk_norm=use_qk_norm
+                ) for _ in range(n_layer)
+            ])
+            self.cross_attn_blocks = nn.ModuleList([
+                QK_Norm_CrossAttentionBlock(
+                    config.d, config.d_head, use_qk_norm=use_qk_norm
+                ) for _ in range(n_layer)
+            ])
         
         # Apply special initialization if configured
         if config.get("special_init", False):
-            for idx, block in enumerate(self.transformer_blocks):
-                if config.depth_init:
-                    weight_init_std = 0.02 / (2 * (idx + 1)) ** 0.5
-                else:
-                    weight_init_std = 0.02 / (2 * config.n_layer) ** 0.5
-                block.apply(lambda module: init_weights(module, weight_init_std))
+            # Initialize self-attention blocks
+            if self.self_attn_blocks is not None:
+                for idx, block in enumerate(self.self_attn_blocks):
+                    if config.depth_init:
+                        weight_init_std = 0.02 / (2 * (idx + 1)) ** 0.5
+                    else:
+                        weight_init_std = 0.02 / (2 * config.n_layer) ** 0.5
+                    block.apply(lambda module: init_weights(module, weight_init_std))
+            
+            # Initialize cross-attention blocks
+            if self.cross_attn_blocks is not None:
+                for idx, block in enumerate(self.cross_attn_blocks):
+                    if config.depth_init:
+                        weight_init_std = 0.02 / (2 * (idx + 1)) ** 0.5
+                    else:
+                        weight_init_std = 0.02 / (2 * config.n_layer) ** 0.5
+                    block.apply(lambda module: init_weights(module, weight_init_std))
         else:
-            for block in self.transformer_blocks:
-                block.apply(init_weights)
+            # Standard initialization
+            if self.self_attn_blocks is not None:
+                for block in self.self_attn_blocks:
+                    block.apply(init_weights)
+            if self.cross_attn_blocks is not None:
+                for block in self.cross_attn_blocks:
+                    block.apply(init_weights)
                 
-        self.transformer_blocks = nn.ModuleList(self.transformer_blocks)
+        self.self_attn_blocks = nn.ModuleList(self.self_attn_blocks)
+        self.cross_attn_blocks = nn.ModuleList(self.cross_attn_blocks)
         self.transformer_input_layernorm = nn.LayerNorm(config.d, elementwise_affine=False)
 
 
@@ -125,55 +176,38 @@ class Images2LatentScene(nn.Module):
 
 
     
-    def pass_layers(self, input_tokens, target_patch, gradient_checkpoint=False, checkpoint_every=1):
+    def pass_layers(self, tokens, target_patch, gradient_checkpoint=False, checkpoint_every=1):
         """
-        Helper function to pass input tokens through all transformer blocks with optional gradient checkpointing.
-        
-        Args:
-            input_tokens: Tensor of shape [batch_size, num_views * num_patches, hidden_dim]
-                The input tokens to process through the transformer blocks.
-            gradient_checkpoint: bool, default False
-                Whether to use gradient checkpointing to save memory during training.
-            checkpoint_every: int, default 1 
-                Number of transformer layers to group together for gradient checkpointing.
-                Only used when gradient_checkpoint=True.
-                
-        Returns:
-            Tensor of shape [batch_size, num_views * num_patches, hidden_dim]
-                The processed tokens after passing through all transformer blocks.
+        concat_tokens: [B, n_input + n_target, D]
+        n_input: int, input tokens数量
         """
-        num_layers = len(self.transformer_blocks)
-        
-        if not gradient_checkpoint:
-            # Standard forward pass through all layers
-            for layer in self.transformer_blocks:
-                input_tokens = layer(input_tokens)
-            return input_tokens
-            
-        # Gradient checkpointing enabled - process layers in groups
-        def _process_layer_group(tokens, start_idx, end_idx):
-            """Helper to process a group of consecutive layers."""
-            for idx in range(start_idx, end_idx):
-                tokens = self.transformer_blocks[idx](tokens)
-            return tokens
-            
-        # Process layer groups with gradient checkpointing
         zs_tilde = None
-        for start_idx in range(0, num_layers, checkpoint_every):
-            end_idx = min(start_idx + checkpoint_every, num_layers)
-            input_tokens = torch.utils.checkpoint.checkpoint(
-                _process_layer_group,
-                input_tokens,
-                start_idx,
-                end_idx,
-                use_reentrant=False
-            )
-            
-            if start_idx + 1 == self.config.training.encode_depth:
-                print(f'REPA at {start_idx+1} layer')
-                zs_tilde = self.projectors(input_tokens[:, target_patch:, :])
-            
-        return input_tokens, zs_tilde
+        if gradient_checkpoint:
+            raise NotImplementedError("gradient checkpoint not supported")
+        if self.config.training.enable_repa:
+            raise NotImplementedError("repa not supported")
+        # 1. Self-Attention阶段
+        if self.self_attn_blocks is not None:
+            for idx, block in enumerate(self.self_attn_blocks):
+                tokens = block(tokens)
+            # if idx + 1 == self.config.training.encode_depth:
+            #     print(f'REPA at {idx+1} layer')
+            #     zs_tilde = self.projectors(tokens[:, target_patch:, :])
+
+        # 2. 拆分input/target tokens
+        input_tokens, target_tokens = tokens[:, :target_patch, :], tokens[:, target_patch:, :]
+
+        # 3. Cross-Attention阶段
+        if self.cross_attn_blocks is not None:
+            for idx, block in enumerate(self.cross_attn_blocks):
+                target_tokens = block(target_tokens, input_tokens)
+                # if len(self.self_attn_blocks) + idx + 1 == self.config.training.encode_depth:
+            #     print(f'REPA at {len(self.self_attn_blocks) + idx + 1} layer')
+            #     zs_tilde = self.projectors(target_tokens)
+
+        # 返回拼接后的tokens和zs_tilde
+        tokens = torch.cat([input_tokens, target_tokens], dim=1)
+        return tokens, zs_tilde
             
 
 
@@ -218,7 +252,7 @@ class Images2LatentScene(nn.Module):
         b, v_input, c, h, w = posed_input_images.size()
 
         input_img_tokens = self.image_tokenizer(posed_input_images)  # [b*v, n_patches, d]
-
+        # x = Linear([I; P]) (b, np, d)
         _, n_patches, d = input_img_tokens.size()  # [b*v, n_patches, d]
         input_img_tokens = input_img_tokens.reshape(b, v_input * n_patches, d)  # [b, v*n_patches, d]
         
@@ -227,18 +261,19 @@ class Images2LatentScene(nn.Module):
 
         b, v_target, c, h, w = target_pose_cond.size()
         target_pose_tokens = self.target_pose_tokenizer(target_pose_cond) # [b*v, n_patches, d]
-
+        # P = Linear([P]) (b*out, np, d)
         # Repeat input tokens for each target view
         repeated_input_img_tokens = repeat(
             input_img_tokens, 'b np d -> (b v_target) np d', 
             v_target=v_target, np=n_patches * v_input
-        )
+        ) # x = (b*out, np*in, d)
 
         # Concatenate input and target tokens
-        transformer_input = torch.cat((repeated_input_img_tokens, target_pose_tokens), dim=1)  
+        transformer_input = torch.cat((repeated_input_img_tokens, target_pose_tokens), dim=1)
+        # x = [MLP(I;P);NLP(P_out)] (b*out, np*in+np, d)   
         concat_img_tokens = self.transformer_input_layernorm(transformer_input)
         checkpoint_every = self.config.training.grad_checkpoint_every
-        transformer_output_tokens, zs_tilde = self.pass_layers(concat_img_tokens, v_input * n_patches, gradient_checkpoint=True, checkpoint_every=checkpoint_every)
+        transformer_output_tokens, zs_tilde = self.pass_layers(concat_img_tokens, v_input * n_patches, gradient_checkpoint=False, checkpoint_every=checkpoint_every)
 
         # Discard the input tokens
         _, target_image_tokens = transformer_output_tokens.split(
@@ -246,7 +281,7 @@ class Images2LatentScene(nn.Module):
         ) # [b * v_target, v*n_patches, d], [b * v_target, n_patches, d]
 
         # REPA
-        if zs_tilde is None:
+        if zs_tilde is None and self.config.training.enable_repa:
             print('REPA at last layer')
             if detach:
                 target_image_tokens_ = target_image_tokens.clone().detach()
@@ -275,7 +310,7 @@ class Images2LatentScene(nn.Module):
                 target.image,
                 zs_tilde,
                 zs_label,
-                train=train
+                train=(train and self.config.training.enable_repa)
             )
         else:
             loss_metrics = None

@@ -156,6 +156,76 @@ class QK_Norm_SelfAttention(nn.Module):
         
         return x
 
+class QK_Norm_CrossAttention(nn.Module):
+    """
+    Cross-attention with optional Q-K normalization.
+    Q 来自 target，K/V 来自 input。
+    """
+
+    def __init__(
+        self,
+        dim,
+        head_dim,
+        qkv_bias=False,
+        fc_bias=True,
+        attn_dropout=0.0,
+        fc_dropout=0.0,
+        use_qk_norm=True,
+    ):
+        super().__init__()
+        assert dim % head_dim == 0, f"Token dimension {dim} should be divisible by head dimension {head_dim}"
+
+        self.dim = dim
+        self.head_dim = head_dim
+        self.num_heads = dim // head_dim
+        self.attn_dropout = attn_dropout
+        self.use_qk_norm = use_qk_norm
+
+        # Q, K, V 分别独立线性投影
+        self.to_q = nn.Linear(dim, dim, bias=qkv_bias)
+        self.to_kv = nn.Linear(dim, 2 * dim, bias=qkv_bias)
+        self.fc = nn.Linear(dim, dim, bias=fc_bias)
+        self.attn_fc_dropout = nn.Dropout(fc_dropout)
+
+        if self.use_qk_norm:
+            self.q_norm = RMSNorm(head_dim)
+            self.k_norm = RMSNorm(head_dim)
+
+    def forward(self, q_input, kv_input, attn_bias=None):
+        """
+        Args:
+            q_input: (batch, n_target, dim)  # target tokens
+            kv_input: (batch, n_input, dim)  # input tokens
+            attn_bias: 可选 attention bias
+        Returns:
+            (batch, n_target, dim)
+        """
+        # Q
+        q = self.to_q(q_input)
+        # K, V
+        k, v = self.to_kv(kv_input).chunk(2, dim=-1)
+
+        # 变形为多头
+        q = rearrange(q, "b l (nh dh) -> b l nh dh", dh=self.head_dim)
+        k = rearrange(k, "b l (nh dh) -> b l nh dh", dh=self.head_dim)
+        v = rearrange(v, "b l (nh dh) -> b l nh dh", dh=self.head_dim)
+
+        # QK Norm
+        if self.use_qk_norm:
+            q = self.q_norm(q)
+            k = self.k_norm(k)
+
+        # Cross Attention
+        x = xops.memory_efficient_attention(
+            q, k, v,
+            attn_bias=attn_bias,
+            p=self.attn_dropout if self.training else 0.0,
+            op=(xops.fmha.flash.FwOp, xops.fmha.flash.BwOp),
+        )
+
+        x = rearrange(x, "b l nh dh -> b l (nh dh)")
+        x = self.attn_fc_dropout(self.fc(x))
+        return x
 
 
 
@@ -265,7 +335,7 @@ class SubsetAttention(nn.Module):
 
 
 
-class QK_Norm_TransformerBlock(nn.Module):
+class QK_Norm_SelfAttentionBlock(nn.Module):
     """
     Standard transformer block with pre-normalization architecture.
     Reference: https://github.com/facebookresearch/dino/blob/7c446df5b9f45747937fb0d72314eb9f7b66930a/vision_transformer.py#L95-L113
@@ -313,4 +383,29 @@ class QK_Norm_TransformerBlock(nn.Module):
 
 
 
- 
+class QK_Norm_CrossAttentionBlock(nn.Module):
+    def __init__(self, dim, head_dim, ln_bias=False, attn_qkv_bias=False, attn_dropout=0.0, attn_fc_bias=False, attn_fc_dropout=0.0, mlp_ratio=4, mlp_bias=False, mlp_dropout=0.0, use_qk_norm=True):
+        super().__init__()
+        self.norm_q = nn.LayerNorm(dim, elementwise_affine=ln_bias)
+        self.norm_kv = nn.LayerNorm(dim, elementwise_affine=ln_bias)
+        self.attn = QK_Norm_CrossAttention(
+            dim=dim,
+            head_dim=head_dim,
+            qkv_bias=attn_qkv_bias,
+            fc_bias=attn_fc_bias,
+            attn_dropout=attn_dropout,
+            fc_dropout=attn_fc_dropout,
+            use_qk_norm=use_qk_norm,
+        )
+        self.norm2 = nn.LayerNorm(dim, elementwise_affine=ln_bias)
+        self.mlp = MLP(
+            dim=dim,
+            mlp_ratio=mlp_ratio,
+            bias=mlp_bias,
+            dropout=mlp_dropout,
+        )
+
+    def forward(self, q, kv):
+        q = q + self.attn(self.norm_q(q), self.norm_kv(kv))
+        q = q + self.mlp(self.norm2(q))
+        return q

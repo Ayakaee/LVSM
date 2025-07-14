@@ -1,0 +1,3 @@
+2025-07-14 19:24:13 | INFO | LVSM_scene_decoder_only.py:53 | create tokenizer with linear
+2025-07-14 19:24:13 | INFO | LVSM_scene_decoder_only.py:53 | create tokenizer with linear
+2025-07-14 19:24:13 | INFO | LVSM_scene_decoder_only.py:127 | init transformer with both self- and cross-attention

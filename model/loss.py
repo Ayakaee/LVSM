@@ -189,7 +189,7 @@ class LossComputer(nn.Module):
             perceptual_loss = self.perceptual_loss_module(rendering, target)
         
         # projection loss
-        proj_loss = 0.
+        proj_loss = torch.tensor(0.0).to(l2_loss.device)
         if not isinstance(zs_tilde, list):
             zs_tilde = [zs_tilde]
         if train:

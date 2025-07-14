@@ -9,7 +9,7 @@ from rich import print
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 import torch.distributed as dist
-from setup import init_config, init_distributed, init_wandb_and_backup
+from setup import init_config, init_distributed, init_wandb_and_backup, init_logging
 from utils.metric_utils import visualize_intermediate_results
 from utils.training_utils import create_optimizer, create_lr_scheduler, auto_resume_job, print_rank0
 from model.encoder import load_encoders, preprocess_raw_image
@@ -19,6 +19,9 @@ from einops import rearrange, repeat
 config = init_config()
 
 os.environ["OMP_NUM_THREADS"] = str(config.training.get("num_threads", 1))
+
+log_file = config.training.get("log_file", f'logs/{config.training.wandb_exp_name}')
+logger = init_logging(log_file)
 
 # Set up DDP for training/inference and Fix random seed
 ddp_info = init_distributed(seed=777)
@@ -71,9 +74,12 @@ total_num_epochs = int(total_param_update_steps * total_batch_size / len(dataset
 
 module, class_name = config.model.class_name.rsplit(".", 1)
 LVSM = importlib.import_module(module).__dict__[class_name]
-model = LVSM(config).to(ddp_info.device)
+model = LVSM(config, logger).to(ddp_info.device)
+if config.training.use_compile:
+    model = torch.compile(model)
 model = DDP(model, device_ids=[ddp_info.local_rank], find_unused_parameters=True)
-encoders, encoder_types, architectures = load_encoders(config.model.encoder_type, ddp_info.device, 256)
+if config.training.enable_repa:
+    encoders, encoder_types, architectures = load_encoders(config.model.encoder_type, ddp_info.device, 256)
 
 optimizer, optimized_param_dict, all_param_dict = create_optimizer(
     model,
@@ -140,15 +146,16 @@ while cur_train_step <= total_train_steps:
     ):
         input, target = model.module.process_data(batch, has_target_image=True, target_has_input = config.training.target_has_input, compute_rays=True)
         zs_label = []
-        for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
-            raw_image_ = rearrange(target.image, 'b v c h w -> (b v) c h w')
-            raw_image_ = preprocess_raw_image(raw_image_, encoder_type)
-            with torch.no_grad():
-                z = encoder.forward_features(raw_image_)
-                if 'mocov3' in encoder_type: z = z = z[:, 1:] 
-                if 'dinov2' in encoder_type: z = z['x_norm_patchtokens']
-                if 'PE-Core' in config.model.encoder_type: z = z[:, 1:, :]
-            zs_label.append(z)
+        if config.training.enable_repa:
+            for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
+                raw_image_ = rearrange(target.image, 'b v c h w -> (b v) c h w')
+                raw_image_ = preprocess_raw_image(raw_image_, encoder_type)
+                with torch.no_grad():
+                    z = encoder.forward_features(raw_image_)
+                    if 'mocov3' in encoder_type: z = z = z[:, 1:] 
+                    if 'dinov2' in encoder_type: z = z['x_norm_patchtokens']
+                    if 'PE-Core' in config.model.encoder_type: z = z[:, 1:, :]
+                zs_label.append(z)
 
         ret_dict = model(batch, zs_label, input, target)
 

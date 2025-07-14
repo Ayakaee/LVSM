@@ -13,22 +13,23 @@ CLIP_DEFAULT_STD = (0.26862954, 0.26130258, 0.27577711)
 
 def preprocess_raw_image(x, enc_type):
     resolution = x.shape[-1]
+    inter_mode = 'bicubic'
     if 'clip' in enc_type:
-        x = torch.nn.functional.interpolate(x, 224 * (resolution // 256), mode='bicubic')
+        x = torch.nn.functional.interpolate(x, 224 * (resolution // 256), mode=inter_mode)
         x = Normalize(CLIP_DEFAULT_MEAN, CLIP_DEFAULT_STD)(x)
     elif 'mocov3' in enc_type or 'mae' in enc_type:
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
     elif 'dinov2' in enc_type:
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
-        x = torch.nn.functional.interpolate(x, 448, mode='bicubic')
+        x = torch.nn.functional.interpolate(x, 448, mode=inter_mode)
     elif 'PE' in enc_type:
-        x = torch.nn.functional.interpolate(x, size=(448, 448), mode='bilinear', align_corners=False)
+        x = torch.nn.functional.interpolate(x, 448, mode=inter_mode, align_corners=False)
         x = (x - 0.5) / 0.5
     elif 'dinov1' in enc_type:
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
     elif 'jepa' in enc_type:
         x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
-        x = torch.nn.functional.interpolate(x, 224 * (resolution // 256), mode='bicubic')
+        x = torch.nn.functional.interpolate(x, 224 * (resolution // 256), mode=inter_mode)
 
     return x
 
