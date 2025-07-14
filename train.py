@@ -77,7 +77,7 @@ LVSM = importlib.import_module(module).__dict__[class_name]
 model = LVSM(config, logger).to(ddp_info.device)
 if config.training.use_compile:
     model = torch.compile(model)
-model = DDP(model, device_ids=[ddp_info.local_rank], find_unused_parameters=True)
+model = DDP(model, device_ids=[ddp_info.local_rank])
 if config.training.enable_repa:
     encoders, encoder_types, architectures = load_encoders(config.model.encoder_type, ddp_info.device, 256)
 

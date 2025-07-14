@@ -86,7 +86,7 @@ def load_encoders(enc_type, device, resolution=256):
             encoder.eval()
         elif 'PE' in encoder_type:
             model_type = "PE-Spatial-G14-448" if 'Spatial' in encoder_type else 'PE-Core-L14-336'
-            encoder = pe.VisionTransformer.from_config(model_type, pretrained=True)  # Loads from HF
+            encoder = pe.VisionTransformer.from_config(model_type, pretrained=True)
             encoder = encoder.to(device)
             encoder.eval()
         

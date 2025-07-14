@@ -11,7 +11,7 @@ import traceback
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import camera_utils, data_utils 
-from model.transformer import QK_Norm_SelfAttentionBlock, QK_Norm_CrossAttentionBlock, init_weights
+from model.transformer import QK_Norm_SelfAttentionBlock, QK_Norm_CrossAttentionBlock, QK_Norm_SelfCrossAttentionBlock, init_weights
 from model.loss import LossComputer
 from model.encoder import preprocess_raw_image
 
@@ -51,7 +51,12 @@ class Images2LatentScene(nn.Module):
         """Helper function to create a tokenizer with given config"""
         self.logger.info(f'create tokenizer with {self.config.model.image_tokenizer.type}')
         if self.config.model.image_tokenizer.type == 'dino':
-            raise NotImplementedError('DINO tokenizer not implemented')
+            model_type = 'PE-Core-L14-336'
+            encoder = pe.VisionTransformer.from_config(model_type, pretrained=True)
+            encoder = encoder.to(device)
+            encoder.eval()
+            for param in encoder.parameters():
+                param.requires_grad = False
         elif self.config.model.image_tokenizer.type == 'linear':
             tokenizer = nn.Sequential(
                 Rearrange(
@@ -107,22 +112,34 @@ class Images2LatentScene(nn.Module):
 
         # Create transformer blocks
         if config.mode == 'self':
-            self.logger.info(f'inittransformer with self-attention')
-            self.self_attn_blocks = [
+            self.logger.info(f'init transformer with self-attention only')
+            self.self_attn_blocks = nn.ModuleList([
                 QK_Norm_SelfAttentionBlock(
                     config.d, config.d_head, use_qk_norm=use_qk_norm
                 ) for _ in range(config.n_layer)
-            ]
+            ])
             self.cross_attn_blocks = None
+            self.self_cross_blocks = None
         elif config.mode == 'cross':
-            self.logger.info(f'init transformer with cross-attention')
-            self.cross_attn_blocks = [
+            self.logger.info(f'init transformer with cross-attention only')
+            self.cross_attn_blocks = nn.ModuleList([
                 QK_Norm_CrossAttentionBlock(
                     config.d, config.d_head, use_qk_norm=use_qk_norm
                 ) for _ in range(config.n_layer)
-            ]
+            ])
             self.self_attn_blocks = None
+            self.self_cross_blocks = None
+        elif config.mode == 'alternate':
+            self.logger.info(f'init transformer with alternating self-cross attention')
+            self.self_cross_blocks = nn.ModuleList([
+                QK_Norm_SelfCrossAttentionBlock(
+                    config.d, config.d_head, use_qk_norm=use_qk_norm
+                ) for _ in range(config.n_layer // 2)
+            ])
+            self.self_attn_blocks = None
+            self.cross_attn_blocks = None
         else:
+            # 原来的 both 模式
             self.logger.info(f'init transformer with both self- and cross-attention')
             n_layer = config.n_layer // 2
             self.self_attn_blocks = nn.ModuleList([
@@ -135,6 +152,7 @@ class Images2LatentScene(nn.Module):
                     config.d, config.d_head, use_qk_norm=use_qk_norm
                 ) for _ in range(n_layer)
             ])
+            self.self_cross_blocks = None
         
         # Apply special initialization if configured
         if config.get("special_init", False):
@@ -155,6 +173,15 @@ class Images2LatentScene(nn.Module):
                     else:
                         weight_init_std = 0.02 / (2 * config.n_layer) ** 0.5
                     block.apply(lambda module: init_weights(module, weight_init_std))
+            
+            # Initialize self-cross blocks
+            if self.self_cross_blocks is not None:
+                for idx, block in enumerate(self.self_cross_blocks):
+                    if config.depth_init:
+                        weight_init_std = 0.02 / (2 * (idx + 1)) ** 0.5
+                    else:
+                        weight_init_std = 0.02 / (2 * config.n_layer) ** 0.5
+                    block.apply(lambda module: init_weights(module, weight_init_std))
         else:
             # Standard initialization
             if self.self_attn_blocks is not None:
@@ -163,9 +190,10 @@ class Images2LatentScene(nn.Module):
             if self.cross_attn_blocks is not None:
                 for block in self.cross_attn_blocks:
                     block.apply(init_weights)
+            if self.self_cross_blocks is not None:
+                for block in self.self_cross_blocks:
+                    block.apply(init_weights)
                 
-        self.self_attn_blocks = nn.ModuleList(self.self_attn_blocks)
-        self.cross_attn_blocks = nn.ModuleList(self.cross_attn_blocks)
         self.transformer_input_layernorm = nn.LayerNorm(config.d, elementwise_affine=False)
 
 
@@ -179,20 +207,18 @@ class Images2LatentScene(nn.Module):
     def pass_layers(self, tokens, target_patch, gradient_checkpoint=False, checkpoint_every=1):
         """
         concat_tokens: [B, n_input + n_target, D]
-        n_input: int, input tokens数量
+        target_patch: int, input tokens数量
         """
         zs_tilde = None
         if gradient_checkpoint:
             raise NotImplementedError("gradient checkpoint not supported")
         if self.config.training.enable_repa:
             raise NotImplementedError("repa not supported")
+        
         # 1. Self-Attention阶段
         if self.self_attn_blocks is not None:
             for idx, block in enumerate(self.self_attn_blocks):
-                tokens = block(tokens)
-            # if idx + 1 == self.config.training.encode_depth:
-            #     print(f'REPA at {idx+1} layer')
-            #     zs_tilde = self.projectors(tokens[:, target_patch:, :])
+                tokens = torch.utils.checkpoint.checkpoint(block, tokens, use_reentrant=False)
 
         # 2. 拆分input/target tokens
         input_tokens, target_tokens = tokens[:, :target_patch, :], tokens[:, target_patch:, :]
@@ -200,12 +226,18 @@ class Images2LatentScene(nn.Module):
         # 3. Cross-Attention阶段
         if self.cross_attn_blocks is not None:
             for idx, block in enumerate(self.cross_attn_blocks):
-                target_tokens = block(target_tokens, input_tokens)
-                # if len(self.self_attn_blocks) + idx + 1 == self.config.training.encode_depth:
-            #     print(f'REPA at {len(self.self_attn_blocks) + idx + 1} layer')
-            #     zs_tilde = self.projectors(target_tokens)
+                target_tokens = torch.utils.checkpoint.checkpoint(
+                    block, target_tokens, input_tokens, use_reentrant=False
+                )
+        
+        # 4. 交替的 Self-Cross 阶段
+        if self.self_cross_blocks is not None:
+            for idx, block in enumerate(self.self_cross_blocks):
+                tokens = torch.utils.checkpoint.checkpoint(
+                    block, tokens, target_patch, use_reentrant=False
+                )
+            input_tokens, target_tokens = tokens[:, :target_patch, :], tokens[:, target_patch:, :]
 
-        # 返回拼接后的tokens和zs_tilde
         tokens = torch.cat([input_tokens, target_tokens], dim=1)
         return tokens, zs_tilde
             

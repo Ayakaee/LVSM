@@ -180,7 +180,6 @@ class QK_Norm_CrossAttention(nn.Module):
         self.num_heads = dim // head_dim
         self.attn_dropout = attn_dropout
         self.use_qk_norm = use_qk_norm
-
         # Q, K, V 分别独立线性投影
         self.to_q = nn.Linear(dim, dim, bias=qkv_bias)
         self.to_kv = nn.Linear(dim, 2 * dim, bias=qkv_bias)
@@ -409,3 +408,60 @@ class QK_Norm_CrossAttentionBlock(nn.Module):
         q = q + self.attn(self.norm_q(q), self.norm_kv(kv))
         q = q + self.mlp(self.norm2(q))
         return q
+
+class QK_Norm_SelfCrossAttentionBlock(nn.Module):
+    """
+    Block that alternates between self-attention and cross-attention within the same block.
+    Self-attention -> Cross-attention -> FFN
+    """
+    def __init__(self, dim, head_dim, ln_bias=False, attn_qkv_bias=False, attn_dropout=0.0, attn_fc_bias=False, attn_fc_dropout=0.0, mlp_ratio=4, mlp_bias=False, mlp_dropout=0.0, use_qk_norm=True):
+        super().__init__()
+        # Self-attention components
+        self.norm1 = nn.LayerNorm(dim, elementwise_affine=ln_bias)
+        self.self_attn = QK_Norm_SelfAttention(
+            dim=dim,
+            head_dim=head_dim,
+            qkv_bias=attn_qkv_bias,
+            fc_bias=attn_fc_bias,
+            attn_dropout=attn_dropout,
+            fc_dropout=attn_fc_dropout,
+            use_qk_norm=use_qk_norm,
+        )
+        
+        # Cross-attention components
+        self.norm_q = nn.LayerNorm(dim, elementwise_affine=ln_bias)
+        self.norm_kv = nn.LayerNorm(dim, elementwise_affine=ln_bias)
+        self.cross_attn = QK_Norm_CrossAttention(
+            dim=dim,
+            head_dim=head_dim,
+            qkv_bias=attn_qkv_bias,
+            fc_bias=attn_fc_bias,
+            attn_dropout=attn_dropout,
+            fc_dropout=attn_fc_dropout,
+            use_qk_norm=use_qk_norm,
+        )
+        
+        # Shared FFN
+        self.norm2 = nn.LayerNorm(dim, elementwise_affine=ln_bias)
+        self.mlp = MLP(
+            dim=dim,
+            mlp_ratio=mlp_ratio,
+            bias=mlp_bias,
+            dropout=mlp_dropout,
+        )
+
+    def forward(self, x, n_target):
+        """
+        Args:
+            x: Input tokens [batch, seq_len, dim] (input + target concatenated)
+            n_target: Number of target tokens
+        """
+        x = x + self.self_attn(self.norm1(x))
+    
+        input_tokens = x[:, :n_target, :]  # KV from input
+        target_tokens = x[:, n_target:, :] # Q from target
+        updated_target = self.cross_attn(self.norm_q(target_tokens), self.norm_kv(input_tokens))
+        x = torch.cat([updated_target, input_tokens], dim=1)
+        
+        x = x + self.mlp(self.norm2(x))
+        return x
