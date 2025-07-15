@@ -6,11 +6,13 @@ import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 import torch.distributed as dist
-from setup import init_config, init_distributed
+from setup import init_config, init_distributed, init_logging
 from utils.metric_utils import export_results, summarize_evaluation
 
 # Load config and read(override) arguments from CLI
 config = init_config()
+log_file = config.training.get("log_file", f'logs/{config.inference.checkpoint_dir.split("/")[-1]}_eval.log')
+logger = init_logging(log_file)
 
 os.environ["OMP_NUM_THREADS"] = str(config.training.get("num_threads", 1))
 
@@ -55,11 +57,12 @@ dist.barrier()
 
 
 # Import model and load checkpoint
+model_path = config.inference.checkpoint_dir.replace("evaluation", "checkpoints")
 module, class_name = config.model.class_name.rsplit(".", 1)
 LVSM = importlib.import_module(module).__dict__[class_name]
-model = LVSM(config).to(ddp_info.device)
+model = LVSM(config, logger).to(ddp_info.device)
 model = DDP(model, device_ids=[ddp_info.local_rank])
-model.module.load_ckpt(config.inference.checkpoint_dir)
+model.module.load_ckpt(model_path)
 
 
 if ddp_info.is_main_process:  

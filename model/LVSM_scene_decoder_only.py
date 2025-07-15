@@ -16,7 +16,7 @@ from model.loss import LossComputer
 from model.encoder import preprocess_raw_image
 
 class Images2LatentScene(nn.Module):
-    def __init__(self, config, logger):
+    def __init__(self, config, logger=None):
         super().__init__()
         self.config = config
         self.process_data = data_utils.ProcessData(config)
