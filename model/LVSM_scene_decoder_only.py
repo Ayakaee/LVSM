@@ -13,7 +13,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import camera_utils, data_utils 
 from model.transformer import QK_Norm_SelfAttentionBlock, QK_Norm_CrossAttentionBlock, QK_Norm_SelfCrossAttentionBlock, init_weights
 from model.loss import LossComputer
-from model.encoder import preprocess_raw_image
+from model.encoder import preprocess_raw_image, IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+import core.vision_encoder.pe as pe
+from torchvision.transforms import Normalize
 
 class Images2LatentScene(nn.Module):
     def __init__(self, config, logger=None):
@@ -49,43 +51,76 @@ class Images2LatentScene(nn.Module):
 
     def _create_tokenizer(self, in_channels, patch_size, d_model):
         """Helper function to create a tokenizer with given config"""
-        self.logger.info(f'create tokenizer with {self.config.model.image_tokenizer.type}')
-        if self.config.model.image_tokenizer.type == 'PE':
-            model_type = 'PE-Core-L14-336'
-            encoder = pe.VisionTransformer.from_config(model_type, pretrained=True)
-            encoder = encoder.to(device)
-            encoder.eval()
-            for param in encoder.parameters():
-                param.requires_grad = False
-            
-        elif self.config.model.image_tokenizer.type == 'linear':
-            tokenizer = nn.Sequential(
-                Rearrange(
-                    "b v c (hh ph) (ww pw) -> (b v) (hh ww) (ph pw c)",
+        tokenizer = nn.Sequential(
+            Rearrange(
+                "b v c (hh ph) (ww pw) -> (b v) (hh ww) (ph pw c)",
                 ph=patch_size,
                 pw=patch_size,
             ),
             nn.Linear(
                 in_channels * (patch_size**2),
                 d_model,
-                    bias=False,
-                ),
-            )
-            tokenizer.apply(init_weights)
-            self.rgb_tokenizer = tokenizer
-        else:
-            raise NotImplementedError('Tokenizer type not implemented')
-
+                bias=False,
+            ),
+        )
+        tokenizer.apply(init_weights)
         return tokenizer
 
     def _init_tokenizers(self):
         """Initialize the image and target pose tokenizers, and image token decoder"""
         # Image tokenizer
-        self.image_tokenizer = self._create_tokenizer(
+        self.logger.info(f'create tokenizer with {self.config.model.image_tokenizer.type}')
+        self.rgbp_tokenizer = self._create_tokenizer(
             in_channels = self.config.model.image_tokenizer.in_channels,
             patch_size = self.config.model.image_tokenizer.patch_size,
             d_model = self.config.model.transformer.d
         )
+        if self.config.model.image_tokenizer.type == 'PE':
+            model_type = 'PE-Core-L14-336'
+            encoder = pe.VisionTransformer.from_config(model_type, pretrained=True)
+            # encoder = encoder.to(self.device)
+            encoder.eval()
+            for param in encoder.parameters():
+                param.requires_grad = False
+            self.image_encoder = encoder
+            self.feature_projector = nn.Linear(1024, self.config.model.transformer.d)
+        elif self.config.model.image_tokenizer.type == 'dino':
+            import timm
+            encoder_type = self.config.model.image_tokenizer.type
+            if 'reg' in encoder_type:
+                encoder = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14_reg')
+            else:
+                encoder = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14')
+            del encoder.head
+            patch_resolution = 16
+            encoder.pos_embed.data = timm.layers.pos_embed.resample_abs_pos_embed(
+                encoder.pos_embed.data, [patch_resolution, patch_resolution],
+            )
+            encoder.head = torch.nn.Identity()
+            # encoder = encoder.to(self.device)
+            self.image_encoder = encoder
+            freeze_encoder = self.config.model.image_tokenizer.get("freeze_image_encoder", True)
+            if freeze_encoder:
+                for param in self.image_encoder.parameters():
+                    param.requires_grad = False
+                self.image_encoder.eval()
+            self.feature_projector = nn.Linear(768, self.config.model.transformer.d)
+        else:
+            self.image_encoder = None
+
+        if self.image_encoder is None:
+            self.align_projector = None
+        else:
+            d_model = self.config.model.transformer.d
+            tokenizer = nn.Sequential(
+                nn.Linear(
+                    d_model * 2,
+                    d_model,
+                        bias=False,
+                    ),
+                )
+            tokenizer.apply(init_weights)
+            self.align_projector = tokenizer
         
         # Target pose tokenizer
         self.target_pose_tokenizer = self._create_tokenizer(
@@ -141,7 +176,6 @@ class Images2LatentScene(nn.Module):
             self.self_attn_blocks = None
             self.cross_attn_blocks = None
         else:
-            # 原来的 both 模式
             self.logger.info(f'init transformer with both self- and cross-attention')
             n_layer = config.n_layer // 2
             self.self_attn_blocks = nn.ModuleList([
@@ -204,6 +238,21 @@ class Images2LatentScene(nn.Module):
         super().train(mode)
         self.loss_computer.eval()
 
+    def get_image_feature(self, image):
+        enc_type = self.config.model.image_tokenizer.type
+        inter_mode = 'bicubic'
+        x = rearrange(image, "b v c h w -> (b v) c h w")
+        if 'dino' in enc_type:
+            x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
+            x = torch.nn.functional.interpolate(x, 448, mode=inter_mode)
+        elif 'PE' in enc_type:
+            x = torch.nn.functional.interpolate(x, 448, mode=inter_mode, align_corners=False)
+            x = (x - 0.5) / 0.5
+        x = self.image_encoder.forward_features(x)
+        if 'dino' in enc_type: x = x['x_norm_patchtokens']
+        if 'PE' in enc_type: x = x[:, 1:, :]
+        x = self.feature_projector(x)
+        return x
 
     
     # @torch._dynamo.disable
@@ -219,25 +268,25 @@ class Images2LatentScene(nn.Module):
             raise NotImplementedError("repa not supported")
         
         # 1. Self-Attention阶段
+        use_reentrant = self.config.training.use_compile
         if self.self_attn_blocks is not None:
             for idx, block in enumerate(self.self_attn_blocks):
-                tokens = torch.utils.checkpoint.checkpoint(block, tokens, use_reentrant=True)
+                tokens = torch.utils.checkpoint.checkpoint(block, tokens, use_reentrant=use_reentrant)
 
-        # 2. 拆分input/target tokens
         input_tokens, target_tokens = tokens[:, :target_patch, :], tokens[:, target_patch:, :]
 
-        # 3. Cross-Attention阶段
+        # 2. Cross-Attention阶段
         if self.cross_attn_blocks is not None:
             for idx, block in enumerate(self.cross_attn_blocks):
                 target_tokens = torch.utils.checkpoint.checkpoint(
-                    block, target_tokens, input_tokens, use_reentrant=True
+                    block, target_tokens, input_tokens, use_reentrant=use_reentrant
                 )
         
-        # 4. 交替的 Self-Cross 阶段
+        # 3. 交替的 Self-Cross 阶段
         if self.self_cross_blocks is not None:
             for idx, block in enumerate(self.self_cross_blocks):
                 tokens = torch.utils.checkpoint.checkpoint(
-                    block, tokens, target_patch, use_reentrant=True
+                    block, tokens, target_patch, use_reentrant=use_reentrant
                 )
             input_tokens, target_tokens = tokens[:, :target_patch, :], tokens[:, target_patch:, :]
 
@@ -286,11 +335,19 @@ class Images2LatentScene(nn.Module):
             images=input.image, ray_o=input.ray_o, ray_d=input.ray_d
         )
         b, v_input, c, h, w = posed_input_images.size()
-
-        input_img_tokens = self.image_tokenizer(posed_input_images)  # [b*v, n_patches, d]
+        # [I; P]
+        rgbp_token = self.rgbp_tokenizer(posed_input_images)  # [b*v, n_patches, d]
         # x = Linear([I; P]) (b, np, d)
-        _, n_patches, d = input_img_tokens.size()  # [b*v, n_patches, d]
-        input_img_tokens = input_img_tokens.reshape(b, v_input * n_patches, d)  # [b, v*n_patches, d]
+        _, n_patches, d = rgbp_token.size()  # [b*v, n_patches, d]
+        rgbp_token = rgbp_token.reshape(b, v_input * n_patches, d)  # [b, v*n_patches, d]
+
+        if self.image_encoder is not None:
+            input_img_features = self.get_image_feature(input.image)
+            input_img_features = input_img_features.reshape(b, v_input * n_patches, d)  # [b, v*n_patches, d]
+            input_img_tokens = torch.cat((input_img_features, rgbp_token), dim=2)  # [b, v*n_patches, d*2]
+            input_img_tokens = self.align_projector(input_img_tokens) # [b, v*n_patches, d]
+        else:
+            input_img_tokens = rgbp_token
         
         # lvsm:256*256/(16*16)=256  dino:224*224/(14*14)=256 pe:448*448/(14*14)
         target_pose_cond= self.get_posed_input(ray_o=target.ray_o, ray_d=target.ray_d)
@@ -517,8 +574,11 @@ class Images2LatentScene(nn.Module):
             traceback.print_exc()
             print(f"Failed to load {ckpt_paths[-1]}")
             return None
-        
-        self.load_state_dict(checkpoint["model"], strict=False)
+        state_dict = checkpoint["model"]
+        if not self.config.training.use_compile:
+            logger.info("discard _orig_mod. in loading model")
+            state_dict = {k.replace('_orig_mod.', '', 1): v for k, v in state_dict.items()}
+        self.load_state_dict(state_dict, strict=False)
         return 0
 
 

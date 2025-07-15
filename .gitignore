@@ -8,6 +8,7 @@ logs/
 todo.md
 *.sh
 *.pt
+*.txt
 experiments/
 pretrained/
 log/

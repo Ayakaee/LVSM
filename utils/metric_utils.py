@@ -131,11 +131,10 @@ def export_results(
     os.makedirs(out_dir, exist_ok=True)
     
     input_data, target_data = result.input, result.target
-    
     for batch_idx in range(input_data.image.size(0)):
         uid = input_data.index[batch_idx, 0, -1].item()
         scene_name = input_data.scene_name[batch_idx]
-        sample_dir = os.path.join(out_dir, f"{uid:06d}")
+        sample_dir = os.path.join(out_dir, f"visualize/{uid:06d}")
         os.makedirs(sample_dir, exist_ok=True)
         
         # Get target view indices
@@ -260,6 +259,7 @@ def _save_video(frames, out_dir):
 
 def summarize_evaluation(evaluation_folder):
     # Find and sort all valid subfolders
+    evaluation_folder = os.path.join(evaluation_folder, "visualize")
     subfolders = sorted(
         [
             os.path.join(evaluation_folder, dirname)

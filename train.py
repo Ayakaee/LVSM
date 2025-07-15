@@ -38,16 +38,16 @@ dist.barrier()
 # 记录训练开始时间
 training_start_time = datetime.now()
 if ddp_info.is_main_process:
-    print(f"\n{'='*60}")
-    print(f"Training started at: {training_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Training configuration:")
-    print(f"  - Total steps: {config.training.train_steps}")
-    print(f"  - Batch size per GPU: {config.training.batch_size_per_gpu}")
-    print(f"  - World size: {ddp_info.world_size}")
-    print(f"  - Learning rate: {config.training.lr}")
-    print(f"  - Use compile: {config.training.use_compile}")
-    print(f"  - Enable REPA: {config.training.enable_repa}")
-    print(f"{'='*60}\n")
+    logger.info(f"\n{'='*60}")
+    logger.info(f"Training started at: {training_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"Training configuration:")
+    logger.info(f"  - Total steps: {config.training.train_steps}")
+    logger.info(f"  - Batch size per GPU: {config.training.batch_size_per_gpu}")
+    logger.info(f"  - World size: {ddp_info.world_size}")
+    logger.info(f"  - Learning rate: {config.training.lr}")
+    logger.info(f"  - Use compile: {config.training.use_compile}")
+    logger.info(f"  - Enable REPA: {config.training.enable_repa}")
+    logger.info(f"{'='*60}\n")
 
 # Set up tf32
 torch.backends.cuda.matmul.allow_tf32 = config.training.use_tf32
@@ -136,9 +136,9 @@ model.train()
 # 记录实际训练开始时间（跳过resume的部分）
 actual_training_start_time = datetime.now()
 if ddp_info.is_main_process:
-    print(f"Actual training started at: {actual_training_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Starting from step: {cur_train_step}")
-    print(f"{'='*60}\n")
+    logger.info(f"Actual training started at: {actual_training_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"Starting from step: {cur_train_step}")
+    logger.info(f"{'='*60}\n")
 
 while cur_train_step <= total_train_steps:
     tic = time.time()
@@ -303,14 +303,14 @@ training_duration = training_end_time - training_start_time
 actual_training_duration = training_end_time - actual_training_start_time
 
 if ddp_info.is_main_process:
-    print(f"\n{'='*60}")
-    print(f"Training completed successfully!")
-    print(f"Training ended at: {training_end_time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Total duration: {training_duration}")
-    print(f"Actual training duration: {actual_training_duration}")
-    print(f"Final step: {cur_train_step}")
-    print(f"Final param update step: {cur_param_update_step}")
-    print(f"{'='*60}\n")
+    logger.info(f"\n{'='*60}")
+    logger.info(f"Training completed successfully!")
+    logger.info(f"Training ended at: {training_end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"Total duration: {training_duration}")
+    logger.info(f"Actual training duration: {actual_training_duration}")
+    logger.info(f"Final step: {cur_train_step}")
+    logger.info(f"Final param update step: {cur_param_update_step}")
+    logger.info(f"{'='*60}\n")
 
 dist.barrier()
 dist.destroy_process_group()
