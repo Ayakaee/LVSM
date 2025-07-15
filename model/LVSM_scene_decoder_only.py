@@ -99,11 +99,6 @@ class Images2LatentScene(nn.Module):
             encoder.head = torch.nn.Identity()
             # encoder = encoder.to(self.device)
             self.image_encoder = encoder
-            freeze_encoder = self.config.model.image_tokenizer.get("freeze_image_encoder", True)
-            if freeze_encoder:
-                for param in self.image_encoder.parameters():
-                    param.requires_grad = False
-                self.image_encoder.eval()
             self.feature_projector = nn.Linear(768, self.config.model.transformer.d)
         else:
             self.image_encoder = None
@@ -111,6 +106,12 @@ class Images2LatentScene(nn.Module):
         if self.image_encoder is None:
             self.align_projector = None
         else:
+            freeze_encoder = self.config.model.get("freeze_image_encoder", True)
+            if freeze_encoder:
+                self.logger.info('freeze parameters when loading image encoder')
+                for param in self.image_encoder.parameters():
+                    param.requires_grad = False
+                self.image_encoder.eval()
             d_model = self.config.model.transformer.d
             tokenizer = nn.Sequential(
                 nn.Linear(
@@ -262,8 +263,8 @@ class Images2LatentScene(nn.Module):
         target_patch: int, input tokens数量
         """
         zs_tilde = None
-        if gradient_checkpoint:
-            raise NotImplementedError("gradient checkpoint not supported")
+        # if gradient_checkpoint:
+        #     raise NotImplementedError("gradient checkpoint not supported")
         if self.config.training.enable_repa:
             raise NotImplementedError("repa not supported")
         
@@ -271,23 +272,32 @@ class Images2LatentScene(nn.Module):
         use_reentrant = self.config.training.use_compile
         if self.self_attn_blocks is not None:
             for idx, block in enumerate(self.self_attn_blocks):
-                tokens = torch.utils.checkpoint.checkpoint(block, tokens, use_reentrant=use_reentrant)
+                if gradient_checkpoint: 
+                    tokens = torch.utils.checkpoint.checkpoint(block, tokens, use_reentrant=use_reentrant)
+                else:
+                    tokens = block(tokens)
 
         input_tokens, target_tokens = tokens[:, :target_patch, :], tokens[:, target_patch:, :]
 
         # 2. Cross-Attention阶段
         if self.cross_attn_blocks is not None:
             for idx, block in enumerate(self.cross_attn_blocks):
-                target_tokens = torch.utils.checkpoint.checkpoint(
-                    block, target_tokens, input_tokens, use_reentrant=use_reentrant
-                )
+                if gradient_checkpoint:
+                    target_tokens = torch.utils.checkpoint.checkpoint(
+                        block, target_tokens, input_tokens, use_reentrant=use_reentrant
+                    )
+                else:
+                    target_tokens = block(target_tokens, input_tokens)
         
         # 3. 交替的 Self-Cross 阶段
         if self.self_cross_blocks is not None:
             for idx, block in enumerate(self.self_cross_blocks):
-                tokens = torch.utils.checkpoint.checkpoint(
-                    block, tokens, target_patch, use_reentrant=use_reentrant
-                )
+                if gradient_checkpoint:
+                    tokens = torch.utils.checkpoint.checkpoint(
+                        block, tokens, target_patch, use_reentrant=use_reentrant
+                    )
+                else:
+                    tokens = block(tokens, target_patch)
             input_tokens, target_tokens = tokens[:, :target_patch, :], tokens[:, target_patch:, :]
 
         tokens = torch.cat([input_tokens, target_tokens], dim=1)
