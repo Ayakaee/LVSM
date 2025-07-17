@@ -3,11 +3,12 @@
 import torch
 import torch.nn as nn
 from einops import rearrange
+from torch.nn.attention.flex_attention import flex_attention
 
 try:
     import xformers.ops as xops
 except ImportError:
-    raise ImportError("Please install xformers to use flashatt v2")
+    print('failed to import xofrmers')
 
 
 
@@ -96,6 +97,7 @@ class QK_Norm_SelfAttention(nn.Module):
         attn_dropout=0.0,
         fc_dropout=0.0,
         use_qk_norm=True,
+        use_flex_attention=False,
     ):
         """
         Args:
@@ -116,6 +118,7 @@ class QK_Norm_SelfAttention(nn.Module):
         self.num_heads = dim // head_dim
         self.attn_dropout = attn_dropout
         self.use_qk_norm = use_qk_norm
+        self.use_flex_attention = use_flex_attention
 
         self.to_qkv = nn.Linear(dim, 3 * dim, bias=qkv_bias)
         self.fc = nn.Linear(dim, dim, bias=fc_bias)
@@ -126,11 +129,15 @@ class QK_Norm_SelfAttention(nn.Module):
             self.q_norm = RMSNorm(head_dim)
             self.k_norm = RMSNorm(head_dim)
 
-    def forward(self, x, attn_bias=None):
+        if self.use_flex_attention:
+            self.compiled_flex_attention = torch.compile(flex_attention, dynamic=False)
+
+    def forward(self, x, attn_bias=None, score_mod=None):
         """
         Args:
             x: Input tensor of shape (batch, seq_len, dim)
             attn_bias: Optional attention bias mask
+            score_mod: Optional score modification function for flex attention
             
         Returns:
             Output tensor of shape (batch, seq_len, dim)
@@ -144,12 +151,22 @@ class QK_Norm_SelfAttention(nn.Module):
             q = self.q_norm(q)
             k = self.k_norm(k)
 
-        x = xops.memory_efficient_attention(
-            q, k, v,
-            attn_bias=attn_bias,
-            p=self.attn_dropout if self.training else 0.0,
-            op=(xops.fmha.flash.FwOp, xops.fmha.flash.BwOp),
-        )
+        if self.use_flex_attention:
+            q, k, v = (rearrange(t, "b s h d -> b h s d") for t in (q, k, v))
+            if score_mod is None:
+                # scaled product score
+                x = self.compiled_flex_attention(q, k, v)
+            else:
+                x = self.compiled_flex_attention(q, k, v, score_mod=score_mod)
+            
+            x = rearrange(x, "b h s d -> b s h d")
+        else:
+            x = xops.memory_efficient_attention(
+                q, k, v,
+                attn_bias=attn_bias,
+                p=self.attn_dropout if self.training else 0.0,
+                op=(xops.fmha.flash.FwOp, xops.fmha.flash.BwOp),
+            )
         
         x = rearrange(x, "b l nh dh -> b l (nh dh)")
         x = self.attn_fc_dropout(self.fc(x))
@@ -171,6 +188,7 @@ class QK_Norm_CrossAttention(nn.Module):
         attn_dropout=0.0,
         fc_dropout=0.0,
         use_qk_norm=True,
+        use_flex_attention=False,
     ):
         super().__init__()
         assert dim % head_dim == 0, f"Token dimension {dim} should be divisible by head dimension {head_dim}"
@@ -180,7 +198,8 @@ class QK_Norm_CrossAttention(nn.Module):
         self.num_heads = dim // head_dim
         self.attn_dropout = attn_dropout
         self.use_qk_norm = use_qk_norm
-        # Q, K, V 分别独立线性投影
+        self.use_flex_attention = use_flex_attention
+
         self.to_q = nn.Linear(dim, dim, bias=qkv_bias)
         self.to_kv = nn.Linear(dim, 2 * dim, bias=qkv_bias)
         self.fc = nn.Linear(dim, dim, bias=fc_bias)
@@ -190,21 +209,22 @@ class QK_Norm_CrossAttention(nn.Module):
             self.q_norm = RMSNorm(head_dim)
             self.k_norm = RMSNorm(head_dim)
 
-    def forward(self, q_input, kv_input, attn_bias=None):
+        if self.use_flex_attention:
+            self.compiled_flex_attention = torch.compile(flex_attention, dynamic=False)
+
+    def forward(self, q_input, kv_input, attn_bias=None, score_mod=None):
         """
         Args:
             q_input: (batch, n_target, dim)  # target tokens
             kv_input: (batch, n_input, dim)  # input tokens
             attn_bias: 可选 attention bias
+            score_mod: Optional score modification function for flex attention
         Returns:
             (batch, n_target, dim)
         """
-        # Q
         q = self.to_q(q_input)
-        # K, V
         k, v = self.to_kv(kv_input).chunk(2, dim=-1)
 
-        # 变形为多头
         q = rearrange(q, "b l (nh dh) -> b l nh dh", dh=self.head_dim)
         k = rearrange(k, "b l (nh dh) -> b l nh dh", dh=self.head_dim)
         v = rearrange(v, "b l (nh dh) -> b l nh dh", dh=self.head_dim)
@@ -215,123 +235,26 @@ class QK_Norm_CrossAttention(nn.Module):
             k = self.k_norm(k)
 
         # Cross Attention
-        x = xops.memory_efficient_attention(
-            q, k, v,
-            attn_bias=attn_bias,
-            p=self.attn_dropout if self.training else 0.0,
-            op=(xops.fmha.flash.FwOp, xops.fmha.flash.BwOp),
-        )
+        if self.use_flex_attention:
+            q, k, v = (rearrange(t, "b s h d -> b h s d") for t in (q, k, v))
 
-        x = rearrange(x, "b l nh dh -> b l (nh dh)")
-        x = self.attn_fc_dropout(self.fc(x))
-        return x
-
-
-
-class SubsetAttention(nn.Module):
-    """Attention that can attend to subsets of queries or keys/values."""
-    
-    def __init__(
-        self,
-        dim,
-        head_dim,
-        qkv_bias=False,
-        attn_dropout=0.0,
-        fc_bias=False,
-        fc_dropout=0.0,
-        use_qk_norm=False
-    ):
-        """
-        Args:
-            dim: Input dimension
-            head_dim: Dimension of each attention head
-            qkv_bias: Whether to use bias in QKV projection
-            attn_dropout: Dropout probability for attention weights
-            fc_bias: Whether to use bias in output projection
-            fc_dropout: Dropout probability for output projection
-            use_qk_norm: Whether to use Q-K normalization
-        We use flash attention V2 for efficiency.
-        """
-        super().__init__()
-        assert dim % head_dim == 0, f"Token dimension {dim} should be divisible by head dimension {head_dim}"
-        
-        self.dim = dim
-        self.head_dim = head_dim
-        self.num_heads = dim // head_dim
-        self.attn_dropout = attn_dropout
-        self.use_qk_norm = use_qk_norm
-
-        # Projections
-        self.to_qkv = nn.Linear(dim, 3 * dim, bias=qkv_bias)
-        self.fc = nn.Linear(dim, dim, bias=fc_bias)
-        self.attn_fc_dropout = nn.Dropout(fc_dropout)
-        
-        # Optional Q-K normalization
-        if self.use_qk_norm:
-            self.q_norm = RMSNorm(head_dim)
-            self.k_norm = RMSNorm(head_dim)
-
-    def forward(self, x, subset_kv_size=None, subset_q_size=None):
-        """
-        Args:
-            x: Input tensor of shape (batch, seq_len, dim)
-            subset_kv_size: If provided, only attend to tokens after this index in KV
-            subset_q_size: If provided, only compute attention for queries up to this index
+            if score_mod is None:
+                x = self.compiled_flex_attention(q, k, v)
+            else:
+                x = self.compiled_flex_attention(q, k, v, score_mod=score_mod)
             
-        Returns:
-            Output tensor of shape (batch, seq_len, dim)
-        """
-        # Only one subset parameter can be provided
-        assert not (subset_kv_size is not None and subset_q_size is not None), \
-            "Only one of subset_kv_size or subset_q_size can be provided"
-
-        q, k, v = self.to_qkv(x).chunk(3, dim=-1)
-        
-        q, k, v = (rearrange(t, "b l (nh dh) -> b l nh dh", dh=self.head_dim) for t in (q, k, v))
-        
-        if self.use_qk_norm:
-            q = self.q_norm(q)
-            k = self.k_norm(k)
-        
-        # Handle subset attention cases
-        if subset_kv_size is not None and subset_kv_size < k.shape[1]:
-            # Attend to subset of key/value tokens
-            k_subset = k[:, subset_kv_size:, :, :].contiguous()
-            v_subset = v[:, subset_kv_size:, :, :].contiguous()
-            
-            x = xops.memory_efficient_attention(
-                q, k_subset, v_subset,
-                attn_bias=None,
-                p=self.attn_dropout if self.training else 0.0,
-                op=(xops.fmha.flash.FwOp, xops.fmha.flash.BwOp),
-            )
-        elif subset_q_size is not None and subset_q_size < q.shape[1]:
-            # Only compute attention for subset of query tokens
-            q_subset = q[:, :subset_q_size, :, :].contiguous()
-            
-            x = xops.memory_efficient_attention(
-                q_subset, k, v,
-                attn_bias=None,
-                p=self.attn_dropout if self.training else 0.0,
-                op=(xops.fmha.flash.FwOp, xops.fmha.flash.BwOp),
-            )
+            x = rearrange(x, "b h s d -> b s h d")
         else:
-            # Regular attention for all tokens
             x = xops.memory_efficient_attention(
                 q, k, v,
-                attn_bias=None,
+                attn_bias=attn_bias,
                 p=self.attn_dropout if self.training else 0.0,
                 op=(xops.fmha.flash.FwOp, xops.fmha.flash.BwOp),
             )
-        
+
         x = rearrange(x, "b l nh dh -> b l (nh dh)")
-
-        # Final projection
         x = self.attn_fc_dropout(self.fc(x))
-        
         return x
-
-
 
 
 class QK_Norm_SelfAttentionBlock(nn.Module):
@@ -353,6 +276,7 @@ class QK_Norm_SelfAttentionBlock(nn.Module):
         mlp_bias=False,
         mlp_dropout=0.0,
         use_qk_norm=True,
+        use_flex_attention=False
     ):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=ln_bias)
@@ -364,6 +288,7 @@ class QK_Norm_SelfAttentionBlock(nn.Module):
             attn_dropout=attn_dropout,
             fc_dropout=attn_fc_dropout,
             use_qk_norm=use_qk_norm,
+            use_flex_attention=use_flex_attention
         )
 
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=ln_bias)
@@ -383,7 +308,21 @@ class QK_Norm_SelfAttentionBlock(nn.Module):
 
 
 class QK_Norm_CrossAttentionBlock(nn.Module):
-    def __init__(self, dim, head_dim, ln_bias=False, attn_qkv_bias=False, attn_dropout=0.0, attn_fc_bias=False, attn_fc_dropout=0.0, mlp_ratio=4, mlp_bias=False, mlp_dropout=0.0, use_qk_norm=True):
+    def __init__(
+        self, 
+        dim, 
+        head_dim, 
+        ln_bias=False, 
+        attn_qkv_bias=False, 
+        attn_dropout=0.0, 
+        attn_fc_bias=False, 
+        attn_fc_dropout=0.0, 
+        mlp_ratio=4, 
+        mlp_bias=False, 
+        mlp_dropout=0.0, 
+        use_qk_norm=True,
+        use_flex_attention=False
+    ):
         super().__init__()
         self.norm_q = nn.LayerNorm(dim, elementwise_affine=ln_bias)
         self.norm_kv = nn.LayerNorm(dim, elementwise_affine=ln_bias)
@@ -395,6 +334,7 @@ class QK_Norm_CrossAttentionBlock(nn.Module):
             attn_dropout=attn_dropout,
             fc_dropout=attn_fc_dropout,
             use_qk_norm=use_qk_norm,
+            use_flex_attention=use_flex_attention
         )
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=ln_bias)
         self.mlp = MLP(
@@ -404,7 +344,7 @@ class QK_Norm_CrossAttentionBlock(nn.Module):
             dropout=mlp_dropout,
         )
 
-    def forward(self, q, kv):
+    def forward(self, kv, q):
         q = q + self.attn(self.norm_q(q), self.norm_kv(kv))
         q = q + self.mlp(self.norm2(q))
         return q
@@ -414,7 +354,21 @@ class QK_Norm_SelfCrossAttentionBlock(nn.Module):
     Block that alternates between self-attention and cross-attention within the same block.
     Self-attention -> Cross-attention -> FFN
     """
-    def __init__(self, dim, head_dim, ln_bias=False, attn_qkv_bias=False, attn_dropout=0.0, attn_fc_bias=False, attn_fc_dropout=0.0, mlp_ratio=4, mlp_bias=False, mlp_dropout=0.0, use_qk_norm=True):
+    def __init__(
+        self, 
+        dim, 
+        head_dim, 
+        ln_bias=False, 
+        attn_qkv_bias=False, 
+        attn_dropout=0.0, 
+        attn_fc_bias=False,
+        attn_fc_dropout=0.0, 
+        mlp_ratio=4, 
+        mlp_bias=False, 
+        mlp_dropout=0.0, 
+        use_qk_norm=True,
+        use_flex_attention=False
+    ):
         super().__init__()
         # Self-attention components
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=ln_bias)
@@ -426,6 +380,7 @@ class QK_Norm_SelfCrossAttentionBlock(nn.Module):
             attn_dropout=attn_dropout,
             fc_dropout=attn_fc_dropout,
             use_qk_norm=use_qk_norm,
+            use_flex_attention=use_flex_attention
         )
         
         # Cross-attention components
@@ -439,6 +394,7 @@ class QK_Norm_SelfCrossAttentionBlock(nn.Module):
             attn_dropout=attn_dropout,
             fc_dropout=attn_fc_dropout,
             use_qk_norm=use_qk_norm,
+            use_flex_attention=use_flex_attention
         )
         
         # Shared FFN
@@ -450,18 +406,19 @@ class QK_Norm_SelfCrossAttentionBlock(nn.Module):
             dropout=mlp_dropout,
         )
 
-    def forward(self, x, n_target):
+    def forward(self, input, target):
         """
         Args:
-            x: Input tokens [batch, seq_len, dim] (input + target concatenated)
-            n_target: Number of target tokens
+            input: [b, seq*in, dim]
+            target: [b*out, seq, dim]
         """
-        x = x + self.self_attn(self.norm1(x))
-    
-        input_tokens = x[:, :n_target, :]  # KV from input
-        target_tokens = x[:, n_target:, :] # Q from target
-        updated_target = self.cross_attn(self.norm_q(target_tokens), self.norm_kv(input_tokens))
-        x = torch.cat([updated_target, input_tokens], dim=1)
-        
-        x = x + self.mlp(self.norm2(x))
-        return x
+        target = target + self.self_attn(self.norm1(target))
+        bs = input.shape[0]
+        bs_out, seq, dim = target.shape
+        target = target.view(bs, seq * bs_out // bs, dim)
+
+        target = target + self.cross_attn(self.norm_q(target), self.norm_kv(input))
+        target = target + self.mlp(self.norm2(target))
+
+        target = target.view(bs_out, seq, dim)
+        return target

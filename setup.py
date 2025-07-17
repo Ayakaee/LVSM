@@ -153,6 +153,21 @@ def init_logging(log_file, level=logging.INFO, name="LVSM"):
 
     return logger
 
+def init_file_logging(log_file):
+    file_only_logger = logging.getLogger("file_only")
+    file_only_logger.setLevel(logging.INFO)
+    file_only_logger.propagate = False
+
+    formatter = logging.Formatter(
+        fmt="%(asctime)s | %(levelname)s | %(filename)s:%(lineno)d | %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(formatter)
+    file_only_logger.addHandler(file_handler)
+    return file_only_logger
+
 def local_backup_src_code(
     src_dir,
     dst_dir,

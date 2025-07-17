@@ -9,7 +9,7 @@ from rich import print
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, DistributedSampler
 import torch.distributed as dist
-from setup import init_config, init_distributed, init_wandb_and_backup, init_logging
+from setup import init_config, init_distributed, init_wandb_and_backup, init_logging, init_file_logging
 from utils.metric_utils import visualize_intermediate_results
 from utils.training_utils import create_optimizer, create_lr_scheduler, auto_resume_job, print_rank0
 from model.encoder import load_encoders, preprocess_raw_image
@@ -25,6 +25,7 @@ os.environ["OMP_NUM_THREADS"] = str(config.training.get("num_threads", 1))
 
 log_file = config.training.get("log_file", f'logs/{config.training.wandb_exp_name}')
 logger = init_logging(log_file)
+file_only_logger = init_file_logging(log_file)
 
 # Set up DDP for training/inference and Fix random seed
 ddp_info = init_distributed(seed=777)
@@ -92,7 +93,7 @@ LVSM = importlib.import_module(module).__dict__[class_name]
 model = LVSM(config, logger).to(ddp_info.device)
 if config.training.use_compile:
     model = torch.compile(model)
-model = DDP(model, device_ids=[ddp_info.local_rank])
+model = DDP(model, device_ids=[ddp_info.local_rank], find_unused_parameters=True)
 if config.training.enable_repa:
     encoders, encoder_types, architectures = load_encoders(config.model.encoder_type, ddp_info.device, 256)
 
@@ -143,6 +144,7 @@ if ddp_info.is_main_process:
 while cur_train_step <= total_train_steps:
     tic = time.time()
     cur_epoch = int(cur_train_step * (total_batch_size / grad_accum_steps) // len(dataset) )
+    time_data_st = time.time()
     try:
         data = next(dataloader_iter)
     except StopIteration:
@@ -152,7 +154,7 @@ while cur_train_step <= total_train_steps:
         data = next(dataloader_iter)
 
     batch = {k: v.to(ddp_info.device) if type(v) == torch.Tensor else v for k, v in data.items()}
-
+    data_time = time.time() - time_data_st
     with torch.autocast(
         enabled=config.training.use_amp,
         device_type="cuda",
@@ -241,7 +243,7 @@ while cur_train_step <= total_train_steps:
         # print in console
         if (cur_train_step % config.training.print_every == 0) or (cur_train_step < 100 + start_train_step):
             print_str = f"[Epoch {int(cur_epoch):>3d}] | Forwad step: {int(cur_train_step):>6d} (Param update step: {int(cur_param_update_step):>6d})"
-            print_str += f" | Iter Time: {time.time() - tic:.2f}s | LR: {optimizer.param_groups[0]['lr']:.6f}\n"
+            print_str += f" | Iter Time: {time.time() - tic:.2f}s | Data Time: {data_time:.4f} | LR: {optimizer.param_groups[0]['lr']:.6f}\n"
             # Add loss values
             for k, v in loss_dict.items():
                 print_str += f"{k}: {v:.6f} | "
@@ -261,6 +263,8 @@ while cur_train_step <= total_train_steps:
                 "epoch": cur_epoch,
             }
             log_dict.update({"train/" + k: v for k, v in loss_dict.items()})
+            file_only_logger.info(f"Training metrics at step {cur_train_step}: {log_dict}")
+            
             wandb.log(
                 log_dict,
                 step=cur_train_step,
