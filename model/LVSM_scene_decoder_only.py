@@ -391,7 +391,7 @@ class Images2LatentScene(nn.Module):
             input_img_features = input_img_features.reshape(b, v_input * n_patches, -1)  # [b, v*n_patches, d]
             input_img_tokens = torch.cat((input_img_features, rgbp_token), dim=2)  # [b, v*n_patches, d*2]
             input_img_tokens = self.align_projector(input_img_tokens) # [b, v*n_patches, d]
-            # Linear([F;Linear([P;I])]) (b, np, d1+d2)
+            # Linear([F;Linear([P;I])]) (b, np, d1+d2) # TODO 图片内self
         else:
             input_img_tokens = rgbp_token
         

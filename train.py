@@ -36,13 +36,22 @@ if ddp_info.is_main_process:
     init_wandb_and_backup(config)
 dist.barrier()
 
+total_num_epochs = config.training.train_epochs
+grad_accum_steps = config.training.grad_accum_steps
+batch_size_per_gpu = config.training.batch_size_per_gpu
+total_batch_size = batch_size_per_gpu * ddp_info.world_size * grad_accum_steps
+total_train_steps = total_num_epochs * config.training.dataset_len // (total_batch_size)
+total_param_update_steps = total_train_steps
+total_train_steps = total_train_steps * grad_accum_steps # real train steps when using gradient accumulation
+save_every_steps = int(config.training.dataset_len // (total_batch_size) * config.training.checkpoint_every_epoch)
+
 # 记录训练开始时间
 training_start_time = datetime.now()
 if ddp_info.is_main_process:
     logger.info(f"\n{'='*60}")
     logger.info(f"Training started at: {training_start_time.strftime('%Y-%m-%d %H:%M:%S')}")
     logger.info(f"Training configuration:")
-    logger.info(f"  - Total steps: {config.training.train_steps}")
+    logger.info(f"  - Total steps: {total_train_steps}")
     logger.info(f"  - Batch size per GPU: {config.training.batch_size_per_gpu}")
     logger.info(f"  - World size: {ddp_info.world_size}")
     logger.info(f"  - Learning rate: {config.training.lr}")
@@ -65,7 +74,6 @@ dataset_name = config.training.get("dataset_name", "data.dataset.Dataset")
 module, class_name = dataset_name.rsplit(".", 1)
 Dataset = importlib.import_module(module).__dict__[class_name]
 dataset = Dataset(config)
-batch_size_per_gpu = config.training.batch_size_per_gpu
 
 datasampler = DistributedSampler(dataset)
 dataloader = DataLoader(
@@ -81,12 +89,7 @@ dataloader = DataLoader(
 )
 dataloader_iter = iter(dataloader)
 
-total_train_steps = config.training.train_steps
-grad_accum_steps = config.training.grad_accum_steps
-total_param_update_steps = total_train_steps
-total_train_steps = total_train_steps * grad_accum_steps # real train steps when using gradient accumulation
-total_batch_size = batch_size_per_gpu * ddp_info.world_size * grad_accum_steps
-total_num_epochs = int(total_param_update_steps * total_batch_size / len(dataset))
+
 
 module, class_name = config.model.class_name.rsplit(".", 1)
 LVSM = importlib.import_module(module).__dict__[class_name]
@@ -133,7 +136,7 @@ dist.barrier()
 
 start_train_step = cur_train_step
 model.train()
-
+print('len:', len(dataset))
 # 记录实际训练开始时间（跳过resume的部分）
 actual_training_start_time = datetime.now()
 if ddp_info.is_main_process:
@@ -144,7 +147,6 @@ if ddp_info.is_main_process:
 while cur_train_step <= total_train_steps:
     tic = time.time()
     cur_epoch = int(cur_train_step * (total_batch_size / grad_accum_steps) // len(dataset) )
-    time_data_st = time.time()
     try:
         data = next(dataloader_iter)
     except StopIteration:
@@ -154,7 +156,7 @@ while cur_train_step <= total_train_steps:
         data = next(dataloader_iter)
 
     batch = {k: v.to(ddp_info.device) if type(v) == torch.Tensor else v for k, v in data.items()}
-    data_time = time.time() - time_data_st
+    data_time = time.time() - tic
     with torch.autocast(
         enabled=config.training.use_amp,
         device_type="cuda",
@@ -242,10 +244,12 @@ while cur_train_step <= total_train_steps:
         loss_dict = {k: float(f"{v.item():.6f}") for k, v in ret_dict.loss_metrics.items()}
         # print in console
         if (cur_train_step % config.training.print_every == 0) or (cur_train_step < 100 + start_train_step):
-            print_str = f"[Epoch {int(cur_epoch):>3d}] | Forwad step: {int(cur_train_step):>6d} (Param update step: {int(cur_param_update_step):>6d})"
+            print_str = f"[Epoch {int(cur_epoch):>3d}] | Total samples: {cur_train_step * total_batch_size} | Forwad step: {int(cur_train_step):>6d} (Param update step: {int(cur_param_update_step):>6d})"
             print_str += f" | Iter Time: {time.time() - tic:.2f}s | Data Time: {data_time:.4f} | LR: {optimizer.param_groups[0]['lr']:.6f}\n"
             # Add loss values
             for k, v in loss_dict.items():
+                if 'lpips' in k:
+                    continue
                 print_str += f"{k}: {v:.6f} | "
             print(print_str)
 
@@ -254,8 +258,8 @@ while cur_train_step <= total_train_steps:
             cur_train_step < 200 + start_train_step
         ):
             log_dict = {
-                "iter": cur_train_step, 
-                "forward_pass_step": cur_train_step,
+                "total_samples": cur_train_step * total_batch_size,
+                "iter": cur_train_step,
                 "param_update_step": cur_param_update_step,
                 "lr": optimizer.param_groups[0]["lr"],
                 "iter_time": time.time() - tic,
@@ -263,15 +267,15 @@ while cur_train_step <= total_train_steps:
                 "epoch": cur_epoch,
             }
             log_dict.update({"train/" + k: v for k, v in loss_dict.items()})
-            file_only_logger.info(f"Training metrics at step {cur_train_step}: {log_dict}")
+            file_only_logger.info(log_dict)
             
             wandb.log(
                 log_dict,
-                step=cur_train_step,
+                step=cur_train_step * total_batch_size,
             )
 
         # save checkpoint
-        if (cur_train_step % config.training.checkpoint_every == 0) or (cur_train_step == total_train_steps):
+        if (cur_train_step % save_every_steps == 0) or (cur_train_step == total_train_steps):
             if isinstance(model, DDP):
                 model_weights = model.module.state_dict()
             else:
@@ -284,9 +288,9 @@ while cur_train_step <= total_train_steps:
                 "param_update_step": cur_param_update_step,
             }
             os.makedirs(config.training.checkpoint_dir, exist_ok=True)
-            ckpt_path = os.path.join(config.training.checkpoint_dir, f"ckpt_{cur_train_step:016}.pt")
+            ckpt_path = os.path.join(config.training.checkpoint_dir, f"ckpt_{cur_epoch * 10:03d}.pt")
             torch.save(checkpoint, ckpt_path)
-            print(f"Saved checkpoint at step {cur_train_step} to {os.path.abspath(ckpt_path)}")
+            print(f"Saved checkpoint at epoch*10 {cur_epoch * 10} to {os.path.abspath(ckpt_path)}")
         
         # export intermediate visualization results
         if export_inter_results:
