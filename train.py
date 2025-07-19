@@ -43,7 +43,7 @@ total_batch_size = batch_size_per_gpu * ddp_info.world_size * grad_accum_steps
 total_train_steps = total_num_epochs * config.training.dataset_len // (total_batch_size)
 total_param_update_steps = total_train_steps
 total_train_steps = total_train_steps * grad_accum_steps # real train steps when using gradient accumulation
-save_every_steps = int(config.training.dataset_len // (total_batch_size) * config.training.checkpoint_every_epoch)
+save_every_steps = int(config.training.dataset_len // (total_batch_size) * config.training.checkpoint_every_epoch) + 1
 
 # 记录训练开始时间
 training_start_time = datetime.now()
@@ -53,6 +53,7 @@ if ddp_info.is_main_process:
     logger.info(f"Training configuration:")
     logger.info(f"  - Total steps: {total_train_steps}")
     logger.info(f"  - Batch size per GPU: {config.training.batch_size_per_gpu}")
+    logger.info(f"  - Save every steps: {save_every_steps}")
     logger.info(f"  - World size: {ddp_info.world_size}")
     logger.info(f"  - Learning rate: {config.training.lr}")
     logger.info(f"  - Use compile: {config.training.use_compile}")
@@ -260,6 +261,7 @@ while cur_train_step <= total_train_steps:
             log_dict = {
                 "total_samples": cur_train_step * total_batch_size,
                 "iter": cur_train_step,
+                "Data Time": data_time,
                 "param_update_step": cur_param_update_step,
                 "lr": optimizer.param_groups[0]["lr"],
                 "iter_time": time.time() - tic,

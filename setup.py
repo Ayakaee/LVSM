@@ -141,7 +141,7 @@ def init_logging(log_file, level=logging.INFO, name="LVSM"):
         datefmt="%Y-%m-%d %H:%M:%S"
     )
 
-    file_handler = logging.FileHandler(log_file, mode='w', encoding='utf-8')
+    file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
     file_handler.setLevel(level)
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)

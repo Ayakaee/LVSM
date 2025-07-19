@@ -247,6 +247,25 @@ class Images2LatentScene(nn.Module):
         super().train(mode)
         self.loss_computer.eval()
 
+    def forward_features(self, x, output_layer=None, masks=None):
+        x = self.image_encoder.prepare_tokens_with_masks(x, masks)
+        if output_layer is None:
+            output_layer = len(self.image_encoder.blocks)
+
+        for idx, blk in enumerate(self.image_encoder.blocks):
+            if idx >= output_layer:
+                break
+            x = blk(x)
+
+        x_norm = self.image_encoder.norm(x)
+        return {
+            "x_norm_clstoken": x_norm[:, 0],
+            "x_norm_regtokens": x_norm[:, 1 : self.image_encoder.num_register_tokens + 1],
+            "x_norm_patchtokens": x_norm[:, self.image_encoder.num_register_tokens + 1 :],
+            "x_prenorm": x,
+            "masks": masks,
+        }
+
     def get_image_feature(self, image): # TODO distilled 
         with torch.no_grad():
             enc_type = self.config.model.image_tokenizer.type
@@ -270,7 +289,11 @@ class Images2LatentScene(nn.Module):
                     x = torch.nn.functional.interpolate(x, 448, mode=inter_mode, align_corners=False)
                     x = (x - 0.5) / 0.5
             
-            x = self.image_encoder.forward_features(x)
+            if self.config.model.image_tokenizer.output_layer is None:
+                x = self.image_encoder.forward_features(x)
+            else:
+                x = self.forward_features(x, self.config.model.image_tokenizer.output_layer)
+
             if 'dino' in enc_type: 
                 x = x['x_norm_patchtokens']
             if 'pe' in enc_type: 
