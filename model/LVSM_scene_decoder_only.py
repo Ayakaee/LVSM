@@ -198,6 +198,13 @@ class Images2LatentScene(nn.Module):
                 ) for _ in range(n_layer)
             ])
             self.self_cross_blocks = None
+
+        if self.config.model.transformer.input_mode == 'embed':
+            self.input_self_attn_blocks = nn.ModuleList([
+                QK_Norm_SelfAttentionBlock(
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
+                ) for _ in range(config.n_layer // 2)
+            ])
         
         # Apply special initialization if configured
         if config.get("special_init", False):
@@ -325,10 +332,11 @@ class Images2LatentScene(nn.Module):
         
         # 24-layer Self-Attention
         # Repeat input tokens for each target view
+        v_input, v_target, n_patches = token_shape
+        b, _, d = input_tokens.shape
         use_reentrant = self.config.training.use_compile
         if self.self_attn_blocks is not None:
             # compate with original LVSM
-            v_input, v_target, n_patches = token_shape
             repeated_input_img_tokens = repeat(
                 input_tokens, 'b np d -> (b v_target) np d', 
                 v_target=v_target, np=n_patches * v_input
@@ -357,6 +365,15 @@ class Images2LatentScene(nn.Module):
         # 3. Self-Cross
         if self.self_cross_blocks is not None:
             for idx, block in enumerate(self.self_cross_blocks):
+                if self.config.model.transformer.input_mode == 'embed':
+                    if self.config.model.transformer.input_scope == 'local':
+                        input_tokens = input_tokens.view(b * v_input, n_patches, d)
+                        input_tokens = self.input_self_attn_blocks[idx](input_tokens)
+                        input_tokens = input_tokens.view(b, v_input * n_patches, d)
+                    elif self.config.model.transformer.input_scope == 'global':
+                        input_tokens = self.input_self_attn_blocks[idx](input_tokens)
+                    else:
+                        raise ValueError(f"Invalid input scope: {self.config.model.transformer.input_scope}")
                 target_tokens = block(input_tokens, target_tokens)
 
         return target_tokens, zs_tilde
