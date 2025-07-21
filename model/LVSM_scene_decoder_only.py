@@ -200,12 +200,19 @@ class Images2LatentScene(nn.Module):
             self.self_cross_blocks = None
 
         if self.config.model.transformer.input_mode == 'embed':
+            self.logger.info("use embed input self attention")
             self.input_self_attn_blocks = nn.ModuleList([
                 QK_Norm_SelfAttentionBlock(
                     config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
                 ) for _ in range(config.n_layer // 2)
             ])
-        
+        elif self.config.model.transformer.input_mode == 'encdec':
+            self.logger.info("use encdec input self attention")
+            self.input_self_attn_blocks = nn.ModuleList([
+                QK_Norm_SelfAttentionBlock(
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
+                ) for _ in range(config.n_layer // 2)
+            ])
         # Apply special initialization if configured
         if config.get("special_init", False):
             # Initialize self-attention blocks
@@ -330,6 +337,16 @@ class Images2LatentScene(nn.Module):
         if self.config.training.enable_repa:
             raise NotImplementedError("repa not supported")
         
+        if self.config.model.transformer.input_mode == 'encdec':
+            for idx, block in enumerate(self.input_self_attn_blocks):
+                if self.config.model.transformer.input_scope == 'local':
+                    input_tokens = input_tokens.view(b * v_input, n_patches, d)
+                    input_tokens = block(input_tokens)
+                    input_tokens = input_tokens.view(b, v_input * n_patches, d)
+                elif self.config.model.transformer.input_scope == 'global':
+                    input_tokens = block(input_tokens)
+                else:
+                    raise ValueError(f"Invalid input scope: {self.config.model.transformer.input_scope}")
         # 24-layer Self-Attention
         # Repeat input tokens for each target view
         v_input, v_target, n_patches = token_shape
