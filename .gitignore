@@ -2,6 +2,8 @@ metric_checkpoint
 pretrained_models
 preprocessed_data
 perception_models
+experiments
+logs
 configs/
 data/
 logs/
