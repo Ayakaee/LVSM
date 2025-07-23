@@ -298,7 +298,7 @@ while cur_train_step <= total_train_steps:
         if export_inter_results:
             vis_path = os.path.join(config.training.checkpoint_dir, f"iter_{cur_train_step:08d}")
             os.makedirs(vis_path, exist_ok=True)
-            visualize_intermediate_results(vis_path, ret_dict)
+            # visualize_intermediate_results(vis_path, ret_dict)
             torch.cuda.empty_cache()
             model.train()
 

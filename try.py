@@ -1,7 +1,3 @@
-from einops import rearrange, repeat
-import numpy as np
-
-a = np.ones((3,6,6))
-b = rearrange(a, 'b h w -> (b h) w')
-print(a.shape)
-print(b.shape)
+with open('data/test/full_list.txt', 'r') as f:
+    all_scene_paths = f.read().splitlines()
+print(len(all_scene_paths))
