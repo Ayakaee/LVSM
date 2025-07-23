@@ -1,3 +1,6 @@
+实验要有备份:.py+.yaml
+训练输出有有日志
+
 7.15
 1. iamge encoder: dino pe-core none
 2. 修复inference bug 原因：模型加载时出错，torch.compile保存的模型state_dict键值多出_orig_mod前缀
@@ -16,3 +19,10 @@
 3. 层数减少
 4. dataloeader time
 5. 增加dino-l
+
+1. zero init dino->self-attn
+2. dino -> self-attn
+3. rgb plucker 对齐到448输入给dino target不变
+
+benchmark设置：以时间为标准，显存拉满，batch size有多大看能力
+如何解释input=2效果不如LVSM

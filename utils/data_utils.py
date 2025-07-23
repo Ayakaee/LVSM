@@ -81,7 +81,7 @@ class ProcessData(nn.Module):
 
         return ray_o, ray_d
     
-    def fetch_views(self, data_batch, has_target_image=False, target_has_input=True):
+    def fetch_views(self, data_batch, has_target_image=False, target_has_input=True, align_resolution=False):
         """
         Splits the input data batch into input and target sets.
         
@@ -144,8 +144,18 @@ class ProcessData(nn.Module):
                 target_dict[key] = torch.gather(value, dim=1, index=expanded_index)
         
         height, width = data_batch["image"].shape[3], data_batch["image"].shape[4]
-        input_dict["image_h_w"] = (height, width)
+        input_height, input_width = 448, 448
+        input_dict["image_h_w"] = (input_height, input_width)
+        bs, v, c, h, w = input_dict["image"].shape
+        input_dict['image'] = rearrange(input_dict['image'], "b v c h w -> (b v) c h w")
+        input_dict["image"] = torch.nn.functional.interpolate(input_dict["image"], (input_height, input_width), mode="bicubic", align_corners=False)
+        input_dict["image"] = rearrange(input_dict["image"], "(b v) c h w -> b v c h w", b=bs, v=v)
         target_dict["image_h_w"] = (height, width)
+        if align_resolution:
+            target_dict['image'] = rearrange(target_dict['image'], "b v c h w -> (b v) c h w")
+            target_dict["image"] = torch.nn.functional.interpolate(target_dict["image"], (input_height, input_width), mode="bicubic", align_corners=False)
+            target_dict["image"] = rearrange(target_dict["image"], "(b v) c h w -> b v c h w", b=bs, v=v)
+            target_dict["image_h_w"] = (input_height, input_width)
 
         input_dict, target_dict = edict(input_dict), edict(target_dict)
 
@@ -154,7 +164,7 @@ class ProcessData(nn.Module):
 
     
     @torch.no_grad()
-    def forward(self, data_batch, has_target_image=True, target_has_input=True, compute_rays=True):
+    def forward(self, data_batch, has_target_image=True, target_has_input=True, compute_rays=True, align_resolution=False):
         """
         Preprocesses the input data batch and (optionally) computes ray_o and ray_d.
 

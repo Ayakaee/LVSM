@@ -36,18 +36,38 @@ def create_optimizer(model, weight_decay, learning_rate, betas):
     # filter out those that do not require grad
     optimized_param_dict = {name: param for name, param in all_param_dict.items() if param.requires_grad}
 
-    decay_params, nodecay_params = [], []
+    # 参数分组：input_encoder单独分组，学习率为主模型1/10
+    encoder_params = []
+    main_params = []
     for name, param in optimized_param_dict.items():
+        if name.startswith("input_encoder.") or name.startswith("module.input_encoder."):
+            encoder_params.append(param)
+        else:
+            main_params.append(param)
+
+    # 主模型分weight decay和no weight decay
+    decay_params, nodecay_params = [], []
+    for param in main_params:
         if param.dim() == 1 or getattr(param, '_no_weight_decay', False):
             nodecay_params.append(param)
         else:
             decay_params.append(param)
+    # input_encoder分weight decay和no weight decay
+    encoder_decay_params, encoder_nodecay_params = [], []
+    for param in encoder_params:
+        if param.dim() == 1 or getattr(param, '_no_weight_decay', False):
+            encoder_nodecay_params.append(param)
+        else:
+            encoder_decay_params.append(param)
+
     optim_groups = [
-        {'params': decay_params, 'weight_decay': weight_decay},
-        {'params': nodecay_params, 'weight_decay': 0.0}
+        {'params': decay_params, 'weight_decay': weight_decay, 'lr': learning_rate},
+        {'params': nodecay_params, 'weight_decay': 0.0, 'lr': learning_rate},
+        {'params': encoder_decay_params, 'weight_decay': weight_decay, 'lr': learning_rate * 0.1},
+        {'params': encoder_nodecay_params, 'weight_decay': 0.0, 'lr': learning_rate * 0.1},
     ]
     # use fused AdamW optimizer by default. 
-    optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas,fused=True)
+    optimizer = torch.optim.AdamW(optim_groups, betas=betas, fused=True)
     
     # Print Model Information
     if dist.get_rank() == 0:
@@ -62,12 +82,11 @@ def create_optimizer(model, weight_decay, learning_rate, betas):
         trainable_params = sum(p.numel() for p in optimized_param_dict.values())
         optim_module_names = sorted(set(get_module_name(name) for name in optimized_param_dict.keys()))
         frozen_module_names = sorted(set(get_module_name(name) for name in set(all_param_dict.keys()) - set(optimized_param_dict.keys())))
-        encoder_params = 0
-        if model.module.image_encoder is not None:
-            encoder_params = sum(p.numel() for p in model.module.image_encoder.parameters())
-        print(f'Total parameters: {format_number(total_params)}, Trainable parameters: {format_number(trainable_params)}, encoder parameters: {format_number(encoder_params)}')        
+        encoder_params_count = sum(p.numel() for p in encoder_params)
+        print(f'Total parameters: {format_number(total_params)}, Trainable parameters: {format_number(trainable_params)}')        
         print(f'Optimized parameters: {optim_module_names}')
         print(f'Frozen parameters: {frozen_module_names}')
+        print(f'input_encoder parameters: {format_number(encoder_params_count)} (lr={learning_rate * 0.1})')
         
     return optimizer, optimized_param_dict, all_param_dict
 

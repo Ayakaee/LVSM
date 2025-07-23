@@ -14,7 +14,7 @@ from utils import camera_utils, data_utils
 from model.transformer import QK_Norm_SelfAttentionBlock, QK_Norm_CrossAttentionBlock, QK_Norm_SelfCrossAttentionBlock, init_weights
 from model.loss import LossComputer
 from model.encoder import preprocess_raw_image, IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
-import core.vision_encoder.pe as pe
+from model.dino_encoder import DinoEncoder
 from torchvision.transforms import Normalize
 
 class Images2LatentScene(nn.Module):
@@ -69,66 +69,40 @@ class Images2LatentScene(nn.Module):
     def _init_tokenizers(self):
         """Initialize the image and target pose tokenizers, and image token decoder"""
         # Image tokenizer
+        if self.config.model.align_resolution:
+            self.config.model.image_tokenizer.patch_size = 14
+            self.config.model.image_tokenizer.image_size = 448
         self.logger.info(f'create tokenizer with {self.config.model.image_tokenizer.type}')
-        self.rgbp_tokenizer = self._create_tokenizer(
-            in_channels = self.config.model.image_tokenizer.in_channels,
-            patch_size = self.config.model.image_tokenizer.patch_size,
-            d_model = self.config.model.transformer.d
-        )
+        # self.rgbp_tokenizer = self._create_tokenizer(
+        #     in_channels = self.config.model.image_tokenizer.in_channels,
+        #     patch_size = self.config.model.image_tokenizer.patch_size,
+        #     d_model = self.config.model.transformer.d
+        # )
+        
         encoder_dim = 0
-        if self.config.model.image_tokenizer.type == 'pecore':
-            model_type = 'PE-Core-L14-336'
-            encoder = pe.VisionTransformer.from_config(model_type, pretrained=True)
-            # encoder = encoder.to(self.device)
-            self.image_encoder = encoder
-            encoder_dim = 1024
-        elif self.config.model.image_tokenizer.type == 'pes':
-            model_type = 'PE-Spatial-L14-448'
-            encoder = pe.VisionTransformer.from_config(model_type, pretrained=True)
-            encoder.init_tensors() # TODO correct???
-            # encoder = encoder.to(self.device)
-            self.image_encoder = encoder
-            encoder_dim = 1024
-        elif self.config.model.image_tokenizer.type == 'dino':
+        if self.config.model.image_tokenizer.type == 'dino':
             import timm
-            encoder_type = self.config.model.image_tokenizer.type
-            if 'reg' in encoder_type:
-                encoder = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14_reg')
-            else:
-                encoder = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14')
+            encoder = DinoEncoder(model_path=self.config.model.image_tokenizer.model_path)
             del encoder.head
             patch_resolution = 32 # TODO if needed for PE-Core/Spatial
             encoder.pos_embed.data = timm.layers.pos_embed.resample_abs_pos_embed(
                 encoder.pos_embed.data, [patch_resolution, patch_resolution],
             )
             encoder.head = torch.nn.Identity()
-            # encoder = encoder.to(self.device)
-            self.image_encoder = encoder
+            self.input_encoder = encoder
             encoder_dim = 768
         elif self.config.model.image_tokenizer.type == 'none':
-            self.image_encoder = None
+            self.input_encoder = None
         else:
             raise NotImplementedError('unknown enocder type')
 
-        if self.image_encoder is None:
-            self.align_projector = None
-        else:
-            freeze_encoder = self.config.model.get("freeze_image_encoder", True)
-            if freeze_encoder:
-                self.logger.info('freeze parameters when loading image encoder')
-                for param in self.image_encoder.parameters():
-                    param.requires_grad = False
-                self.image_encoder.eval()
-            d_model = self.config.model.transformer.d
-            projector = nn.Sequential(
-                nn.Linear(
-                    d_model + encoder_dim,
-                    d_model,
-                        bias=False,
-                    ),
-                )
-            projector.apply(init_weights)
-            self.align_projector = projector
+        # if self.input_encoder is not None:
+        #     freeze_encoder = self.config.model.get("freeze_input_encoder", True)
+            # if freeze_encoder:
+            #     self.logger.info('freeze parameters when loading image encoder')
+            #     for param in self.input_encoder.parameters():
+            #         param.requires_grad = False
+            #     self.input_encoder.eval()
         
         # Target pose tokenizer
         self.target_pose_tokenizer = self._create_tokenizer(
@@ -157,16 +131,7 @@ class Images2LatentScene(nn.Module):
         use_flex_attention = config.attention_arch == 'flex'
 
         # Create transformer blocks
-        if config.mode == 'self':
-            self.logger.info(f'init transformer with self-attention only')
-            self.self_attn_blocks = nn.ModuleList([
-                QK_Norm_SelfAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
-                ) for _ in range(config.n_layer)
-            ])
-            self.cross_attn_blocks = None
-            self.self_cross_blocks = None
-        elif config.mode == 'cross':
+        if config.mode == 'cross':
             self.logger.info(f'init transformer with cross-attention only')
             self.cross_attn_blocks = nn.ModuleList([
                 QK_Norm_CrossAttentionBlock(
@@ -199,20 +164,6 @@ class Images2LatentScene(nn.Module):
             ])
             self.self_cross_blocks = None
 
-        if self.config.model.transformer.input_mode == 'embed':
-            self.logger.info("use embed input self attention")
-            self.input_self_attn_blocks = nn.ModuleList([
-                QK_Norm_SelfAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
-                ) for _ in range(config.n_layer // 2)
-            ])
-        elif self.config.model.transformer.input_mode == 'encdec':
-            self.logger.info("use encdec input self attention")
-            self.input_self_attn_blocks = nn.ModuleList([
-                QK_Norm_SelfAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
-                ) for _ in range(config.n_layer // 2)
-            ])
         # Apply special initialization if configured
         if config.get("special_init", False):
             # Initialize self-attention blocks
@@ -261,25 +212,6 @@ class Images2LatentScene(nn.Module):
         super().train(mode)
         self.loss_computer.eval()
 
-    def forward_features(self, x, output_layer=None, masks=None):
-        x = self.image_encoder.prepare_tokens_with_masks(x, masks)
-        if output_layer is None:
-            output_layer = len(self.image_encoder.blocks)
-
-        for idx, blk in enumerate(self.image_encoder.blocks):
-            if idx >= output_layer:
-                break
-            x = blk(x)
-
-        x_norm = self.image_encoder.norm(x)
-        return {
-            "x_norm_clstoken": x_norm[:, 0],
-            "x_norm_regtokens": x_norm[:, 1 : self.image_encoder.num_register_tokens + 1],
-            "x_norm_patchtokens": x_norm[:, self.image_encoder.num_register_tokens + 1 :],
-            "x_prenorm": x,
-            "masks": masks,
-        }
-
     def get_image_feature(self, image): # TODO distilled 
         with torch.no_grad():
             enc_type = self.config.model.image_tokenizer.type
@@ -304,7 +236,7 @@ class Images2LatentScene(nn.Module):
                     x = (x - 0.5) / 0.5
             
             if self.config.model.image_tokenizer.output_layer is None:
-                x = self.image_encoder.forward_features(x)
+                x = self.input_encoder.forward_features(x)
             else:
                 x = self.forward_features(x, self.config.model.image_tokenizer.output_layer)
 
@@ -328,7 +260,7 @@ class Images2LatentScene(nn.Module):
             return x
 
     
-    def pass_layers(self, input_tokens, target_tokens, token_shape, gradient_checkpoint=False, checkpoint_every=1):
+    def pass_layers(self, input_images, target_tokens, token_shape, gradient_checkpoint=False, checkpoint_every=1):
         """
         concat_tokens: [B, n_input + n_target, D]
         input_patch: int, input tokens数量
@@ -336,62 +268,18 @@ class Images2LatentScene(nn.Module):
         zs_tilde = None
         if self.config.training.enable_repa:
             raise NotImplementedError("repa not supported")
-        
-        if self.config.model.transformer.input_mode == 'encdec':
-            for idx, block in enumerate(self.input_self_attn_blocks):
-                if self.config.model.transformer.input_scope == 'local':
-                    input_tokens = input_tokens.view(b * v_input, n_patches, d)
-                    input_tokens = block(input_tokens)
-                    input_tokens = input_tokens.view(b, v_input * n_patches, d)
-                elif self.config.model.transformer.input_scope == 'global':
-                    input_tokens = block(input_tokens)
-                else:
-                    raise ValueError(f"Invalid input scope: {self.config.model.transformer.input_scope}")
-        # 24-layer Self-Attention
-        # Repeat input tokens for each target view
+        input_tokens = self.input_encoder.prepare_tokens_with_masks(input_images, masks=None)
         v_input, v_target, n_patches = token_shape
-        b, _, d = input_tokens.shape
-        use_reentrant = self.config.training.use_compile
-        if self.self_attn_blocks is not None:
-            # compate with original LVSM
-            repeated_input_img_tokens = repeat(
-                input_tokens, 'b np d -> (b v_target) np d', 
-                v_target=v_target, np=n_patches * v_input
-            ) # x = (b*out, np*in, d)
-
-            tokens = torch.cat((repeated_input_img_tokens, target_tokens), dim=1)
-            # x = [MLP(I;P);NLP(P_out)] (b*out, np*in+np, d)   
-            tokens = self.transformer_input_layernorm(tokens)
-            
-            for idx, block in enumerate(self.self_attn_blocks):
-                if gradient_checkpoint: 
-                    tokens = torch.utils.checkpoint.checkpoint(block, tokens, use_reentrant=use_reentrant)
-                else:
-                    tokens = block(tokens)
-
-        # 24 -layer Cross-Attention
-        if self.cross_attn_blocks is not None:
-            for idx, block in enumerate(self.cross_attn_blocks):
-                if gradient_checkpoint:
-                    target_tokens = torch.utils.checkpoint.checkpoint(
-                        block, input_tokens, target_tokens, use_reentrant=use_reentrant
-                    )
-                else:
-                    target_tokens = block(input_tokens, target_tokens)
+        bv, _, d = input_tokens.shape
+        b = bv // v_input
         
-        # 3. Self-Cross
+        # Self-Cross
         if self.self_cross_blocks is not None:
             for idx, block in enumerate(self.self_cross_blocks):
-                if self.config.model.transformer.input_mode == 'embed':
-                    if self.config.model.transformer.input_scope == 'local':
-                        input_tokens = input_tokens.view(b * v_input, n_patches, d)
-                        input_tokens = self.input_self_attn_blocks[idx](input_tokens)
-                        input_tokens = input_tokens.view(b, v_input * n_patches, d)
-                    elif self.config.model.transformer.input_scope == 'global':
-                        input_tokens = self.input_self_attn_blocks[idx](input_tokens)
-                    else:
-                        raise ValueError(f"Invalid input scope: {self.config.model.transformer.input_scope}")
-                target_tokens = block(input_tokens, target_tokens)
+                input_tokens = input_tokens.view(b * v_input, n_patches + 1, d)
+                input_tokens = self.input_encoder.blocks[idx](input_tokens)
+                input_tokens = input_tokens.view(b, v_input * (n_patches + 1), d)
+                target_tokens = block(input_tokens[:, 1:, :], target_tokens)
 
         return target_tokens, zs_tilde
             
@@ -437,20 +325,21 @@ class Images2LatentScene(nn.Module):
             images=input.image, ray_o=input.ray_o, ray_d=input.ray_d
         )
         b, v_input, c, h, w = posed_input_images.size()
+        n_patches = (self.config.model.image_tokenizer.image_size // self.config.model.image_tokenizer.patch_size) ** 2
         # [I; P]
-        rgbp_token = self.rgbp_tokenizer(posed_input_images)  # [b*v, n_patches, d]
-        # x = Linear([I; P]) (b, np, d)
-        _, n_patches, d = rgbp_token.size()  # [b*v, n_patches, d]
-        rgbp_token = rgbp_token.view(b, v_input * n_patches, d)  # [b, v*n_patches, d]
+        # rgbp_token = self.rgbp_tokenizer(posed_input_images)  # [b*v, n_patches, d]
+        # # x = Linear([I; P]) (b, np, d)
+        # _, n_patches, d = rgbp_token.size()  # [b*v, n_patches, d]
+        # rgbp_token = rgbp_token.view(b, v_input * n_patches, d)  # [b, v*n_patches, d]
 
-        if self.image_encoder is not None:
-            input_img_features = self.get_image_feature(input.image) # Linear(encoder(I)) (b, np, d)
-            input_img_features = input_img_features.reshape(b, v_input * n_patches, -1)  # [b, v*n_patches, d]
-            input_img_tokens = torch.cat((input_img_features, rgbp_token), dim=2)  # [b, v*n_patches, d*2]
-            input_img_tokens = self.align_projector(input_img_tokens) # [b, v*n_patches, d]
-            # Linear([F;Linear([P;I])]) (b, np, d1+d2) # TODO 图片内self
-        else:
-            input_img_tokens = rgbp_token
+        # if self.input_encoder is not None:
+        #     input_img_features = self.get_image_feature(input.image) # Linear(encoder(I)) (b, np, d)
+        #     input_img_features = input_img_features.reshape(b, v_input * n_patches, -1)  # [b, v*n_patches, d]
+        #     input_img_tokens = torch.cat((input_img_features, rgbp_token), dim=2)  # [b, v*n_patches, d*2]
+        #     input_img_tokens = self.align_projector(input_img_tokens) # [b, v*n_patches, d]
+        #     # Linear([F;Linear([P;I])]) (b, np, d1+d2)
+        # else:
+        #     input_img_tokens = rgbp_token
         
         # lvsm:256*256/(16*16)=256  dino:224*224/(14*14)=256 pe:448*448/(14*14)
         target_pose_cond= self.get_posed_input(ray_o=target.ray_o, ray_d=target.ray_d)
@@ -461,7 +350,8 @@ class Images2LatentScene(nn.Module):
 
         checkpoint_every = self.config.training.grad_checkpoint_every
         token_shape = (v_input, v_target, n_patches)
-        target_image_tokens, zs_tilde = self.pass_layers(input_img_tokens, target_pose_tokens, token_shape, gradient_checkpoint=False, checkpoint_every=checkpoint_every)
+        posed_input_images = rearrange(posed_input_images, "b v c h w -> (b v) c h w")
+        target_image_tokens, zs_tilde = self.pass_layers(posed_input_images, target_pose_tokens, token_shape, gradient_checkpoint=False, checkpoint_every=checkpoint_every)
         # [b * v_target, n_patches, d]
 
         # REPA
