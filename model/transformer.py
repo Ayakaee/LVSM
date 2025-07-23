@@ -422,3 +422,30 @@ class QK_Norm_SelfCrossAttentionBlock(nn.Module):
 
         target = target.view(bs_out, seq, dim)
         return target
+
+class QK_Norm_FFNBlock(nn.Module):
+    """
+    只有FFN，没有Attention的Transformer Block。
+    """
+    def __init__(
+        self,
+        dim,
+        head_dim=None,  # 兼容接口，实际不用
+        ln_bias=False,
+        mlp_ratio=4,
+        mlp_bias=False,
+        mlp_dropout=0.0,
+        **kwargs  # 兼容多余参数
+    ):
+        super().__init__()
+        self.norm = nn.LayerNorm(dim, elementwise_affine=ln_bias)
+        self.mlp = MLP(
+            dim=dim,
+            mlp_ratio=mlp_ratio,
+            bias=mlp_bias,
+            dropout=mlp_dropout,
+        )
+
+    def forward(self, x):
+        x = x + self.mlp(self.norm(x))
+        return x

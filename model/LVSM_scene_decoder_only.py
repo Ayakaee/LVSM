@@ -11,7 +11,7 @@ import traceback
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import camera_utils, data_utils 
-from model.transformer import QK_Norm_SelfAttentionBlock, QK_Norm_CrossAttentionBlock, QK_Norm_SelfCrossAttentionBlock, init_weights
+from model.transformer import QK_Norm_SelfAttentionBlock, QK_Norm_CrossAttentionBlock, QK_Norm_SelfCrossAttentionBlock, QK_Norm_FFNBlock, init_weights
 from model.loss import LossComputer
 from model.encoder import preprocess_raw_image, IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 import core.vision_encoder.pe as pe
@@ -213,6 +213,13 @@ class Images2LatentScene(nn.Module):
                     config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
                 ) for _ in range(config.n_layer // 2)
             ])
+        elif self.config.model.transformer.input_mode == 'ffn':
+            self.logger.info(f'init transformer with ffn only')
+            self.input_self_attn_blocks = nn.ModuleList([
+                QK_Norm_FFNBlock(
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
+                ) for _ in range(config.n_layer // 2)
+            ])
         # Apply special initialization if configured
         if config.get("special_init", False):
             # Initialize self-attention blocks
@@ -382,7 +389,7 @@ class Images2LatentScene(nn.Module):
         # 3. Self-Cross
         if self.self_cross_blocks is not None:
             for idx, block in enumerate(self.self_cross_blocks):
-                if self.config.model.transformer.input_mode == 'embed':
+                if self.config.model.transformer.input_mode == 'embed' or self.config.model.transformer.input_mode == 'ffn':
                     if self.config.model.transformer.input_scope == 'local':
                         input_tokens = input_tokens.view(b * v_input, n_patches, d)
                         input_tokens = self.input_self_attn_blocks[idx](input_tokens)
