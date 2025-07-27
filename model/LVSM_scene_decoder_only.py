@@ -58,11 +58,11 @@ class Images2LatentScene(nn.Module):
                 for idx in value:
                     self.repa_x[repa_type][idx] = None
                     projector_dict[str(idx)] = nn.Sequential(
-                        nn.Linear(self.config.model.transformer.d, config.model.projector_dim),
+                        nn.Linear(self.config.model.transformer.d, self.config.model.projector_dim),
                         nn.SiLU(),
-                        nn.Linear(config.model.projector_dim, config.model.projector_dim),
+                        nn.Linear(self.config.model.projector_dim, self.config.model.projector_dim),
                         nn.SiLU(),
-                        nn.Linear(config.model.projector_dim, z_dim)
+                        nn.Linear(self.config.model.projector_dim, z_dim)
                     )
                 self.repa_projector[repa_type][str(key)] = projector_dict
 

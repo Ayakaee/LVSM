@@ -60,6 +60,16 @@ if ddp_info.is_main_process:
     logger.info(f"  - Enable REPA: {config.training.enable_repa}")
     logger.info(f"{'='*60}\n")
 
+# 添加基于时间的保存配置
+total_train_hours = config.training.get("train_time", 12)
+save_every_hours = config.training.get("checkpoint_every_time", 1.0)
+save_every_seconds = int(save_every_hours * 3600)
+total_train_seconds = int(total_train_hours * 3600)
+last_time_save = training_start_time
+
+if ddp_info.is_main_process:
+    logger.info(f"Time-based saving: every {save_every_hours} hours ({save_every_seconds} seconds)")
+    logger.info(f"Total training hours: {total_train_hours}")
 # Set up tf32
 torch.backends.cuda.matmul.allow_tf32 = config.training.use_tf32
 torch.backends.cudnn.allow_tf32 = config.training.use_tf32
@@ -145,7 +155,7 @@ if ddp_info.is_main_process:
     logger.info(f"Starting from step: {cur_train_step}")
     logger.info(f"{'='*60}\n")
 
-while cur_train_step <= total_train_steps:
+while cur_train_step <= total_train_steps and (datetime.now() - training_start_time).total_seconds() < total_train_seconds:
     tic = time.time()
     cur_epoch = int(cur_train_step * (total_batch_size / grad_accum_steps) // len(dataset) )
     try:
@@ -164,18 +174,6 @@ while cur_train_step <= total_train_steps:
         dtype=amp_dtype_mapping[config.training.amp_dtype],
     ):
         input, target = model.module.process_data(batch, has_target_image=True, target_has_input = config.training.target_has_input, compute_rays=True)
-        zs_label = []
-        # if config.training.enable_repa:
-        #     for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
-        #         raw_image_ = rearrange(target.image, 'b v c h w -> (b v) c h w')
-        #         raw_image_ = preprocess_raw_image(raw_image_, encoder_type)
-        #         with torch.no_grad():
-        #             z = encoder.forward_features(raw_image_)
-        #             if 'mocov3' in encoder_type: z = z = z[:, 1:] 
-        #             if 'dinov2' in encoder_type: z = z['x_norm_patchtokens']
-        #             if 'PE-Core' in config.model.encoder_type: z = z[:, 1:, :]
-        #         zs_label.append(z)
-
         ret_dict = model(batch, input, target)
 
     update_grads = (cur_train_step + 1) % grad_accum_steps == 0 or cur_train_step == total_train_steps
@@ -258,26 +256,47 @@ while cur_train_step <= total_train_steps:
         if (cur_train_step % config.training.wandb_log_every == 0) or (
             cur_train_step < 200 + start_train_step
         ):
-            log_dict = {
-                "total_samples": cur_train_step * total_batch_size,
+            current_time = datetime.now()
+            total_time_seconds = (current_time - training_start_time).total_seconds()
+            total_time_hours = total_time_seconds / 3600
+            
+            # 基础日志数据
+            base_log_dict = {
                 "iter": cur_train_step,
                 "Data Time": data_time,
-                "param_update_step": cur_param_update_step,
                 "lr": optimizer.param_groups[0]["lr"],
                 "iter_time": time.time() - tic,
                 "grad_norm": total_grad_norm,
                 "epoch": cur_epoch,
+                "total_time_seconds": total_time_seconds,
+                "total_time_hours": total_time_hours,
+                "param_update_step": cur_param_update_step,
+                "total_samples": cur_train_step * total_batch_size,
+                "total_views": cur_train_step * total_batch_size * config.training.num_target_views
             }
-            log_dict.update({"train/" + k: v for k, v in loss_dict.items()})
-            file_only_logger.info(log_dict)
+            
+            # 添加损失指标
+            loss_log_dict = {"train/" + k: v for k, v in loss_dict.items()}
+            base_log_dict.update(loss_log_dict)
+            
+            # 记录到文件日志
+            file_only_logger.info(base_log_dict)
             
             wandb.log(
-                log_dict,
+                base_log_dict,
                 step=cur_train_step * total_batch_size,
             )
+            
+            base_log_dict.update({"train/" + k: v for k, v in loss_dict.items()})
+            file_only_logger.info(base_log_dict)      
 
         # save checkpoint
-        if (cur_train_step % save_every_steps == 0) or (cur_train_step == total_train_steps):
+        current_time = datetime.now()
+        time_since_last_save = (current_time - last_time_save).total_seconds()
+        should_save_by_time = (time_since_last_save >= save_every_seconds) or (current_time - training_start_time).total_seconds() >= total_train_seconds
+        should_save_by_steps = (cur_train_step % save_every_steps == 0) or (cur_train_step == total_train_steps)
+        
+        if should_save_by_steps or should_save_by_time:
             if isinstance(model, DDP):
                 model_weights = model.module.state_dict()
             else:
@@ -290,9 +309,24 @@ while cur_train_step <= total_train_steps:
                 "param_update_step": cur_param_update_step,
             }
             os.makedirs(config.training.checkpoint_dir, exist_ok=True)
-            ckpt_path = os.path.join(config.training.checkpoint_dir, f"ckpt_{cur_epoch * 10:03d}.pt")
+            
+            # 生成检查点文件名
+            if should_save_by_steps:
+                # 基于epoch的保存
+                ckpt_path = os.path.join(config.training.checkpoint_dir, f"ckpt_{cur_epoch * 100:04f}.pt")
+                save_reason = f"epoch*100 {cur_epoch * 100}"
+            else:
+                # 基于时间的保存
+                hours_elapsed = (current_time - training_start_time).total_seconds() / 3600
+                ckpt_path = os.path.join(config.training.checkpoint_dir, f"ckpt_t{hours_elapsed:.3f}h.pt")
+                save_reason = f"time {hours_elapsed:.3f}h"
+            
             torch.save(checkpoint, ckpt_path)
-            print(f"Saved checkpoint at epoch*10 {cur_epoch * 10} to {os.path.abspath(ckpt_path)}")
+            logger.info(f"Saved checkpoint at {save_reason} to {os.path.abspath(ckpt_path)}")
+            
+            # 如果是因为时间保存的，更新上次保存时间
+            if should_save_by_time:
+                last_time_save = current_time
         
         # export intermediate visualization results
         if export_inter_results:
