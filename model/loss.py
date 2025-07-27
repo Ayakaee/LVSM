@@ -149,8 +149,11 @@ class LossComputer(nn.Module):
         self,
         rendering,
         target,
-        zs_tilde,
-        zs_label,
+        repa_x=None,
+        repa_label=None,
+        repa_projector=None,
+        repa_config=None,
+        enable_repa=False,
         train=True
     ):
         """
@@ -190,16 +193,20 @@ class LossComputer(nn.Module):
         
         # projection loss
         proj_loss = torch.tensor(0.0).to(l2_loss.device)
-        if not isinstance(zs_tilde, list):
-            zs_tilde = [zs_tilde]
-        if train:
-            bsz = zs_label[0].shape[0]
-            for i, (z, z_tilde) in enumerate(zip(zs_label, zs_tilde)):
-                for j, (z_j, z_tilde_j) in enumerate(zip(z, z_tilde)):
-                    z_tilde_j = torch.nn.functional.normalize(z_tilde_j, dim=-1) 
-                    z_j = torch.nn.functional.normalize(z_j, dim=-1) 
-                    proj_loss += mean_flat(-(z_j * z_tilde_j).sum(dim=-1))
-            proj_loss /= (len(zs_label) * bsz)
+        cnt = 0
+        if train and enable_repa:
+            for repa_type in ['input', 'target']:
+                for key, value in repa_config[repa_type].items():
+                    label = repa_label[repa_type][key]
+                    for idx in value:
+                        label = repa_projector[repa_type][str(key)][str(idx)](label)
+                        x = repa_x[repa_type][idx]
+                        for (x_j, label_j) in zip(x, label):
+                            label_j = torch.nn.functional.normalize(label_j, dim=-1) 
+                            x_j = torch.nn.functional.normalize(x_j, dim=-1) 
+                            proj_loss += mean_flat(-(x_j * label_j).sum(dim=-1))
+                        cnt += x.shape[0]
+            proj_loss /= cnt
 
 
         loss = (

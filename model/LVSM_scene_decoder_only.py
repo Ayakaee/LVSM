@@ -16,6 +16,7 @@ from model.loss import LossComputer
 from model.encoder import preprocess_raw_image, IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 import core.vision_encoder.pe as pe
 from torchvision.transforms import Normalize
+from model.repa_config import repa_map
 
 class Images2LatentScene(nn.Module):
     def __init__(self, config, logger=None):
@@ -33,21 +34,37 @@ class Images2LatentScene(nn.Module):
         # Initialize loss computer
         self.loss_computer = LossComputer(config)
 
-        # REPA
-        if config.training.enable_repa:
-            if 'dinov2' in self.config.model.encoder_type:
-                z_dim = 768
-            elif 'PE' in self.config.model.encoder_type:
-                z_dim = 1536 if "Spatial" in self.config.model.encoder_type else 1024
-            self.projectors = nn.Sequential(
-                nn.Linear(self.config.model.transformer.d, config.model.projector_dim),
-                nn.SiLU(),
-                nn.Linear(config.model.projector_dim, config.model.projector_dim),
-                nn.SiLU(),
-                nn.Linear(config.model.projector_dim, z_dim)
-            )
+        # Initialize REPA
+        if self.config.training.enable_repa:
+            self._init_repa()
+
+    def _init_repa(self):
+        if 'dino' in self.config.model.image_tokenizer.type:
+            z_dim = 768
         else:
-            self.projectors = None
+            raise NotImplementedError(f"Unknown image tokenizer type: {self.config.model.image_tokenizer.type}")
+        self.repa_label = {'input': {}, 'target': {}}
+        self.repa_x = {'input': {}, 'target': {}}
+        self.repa_projector = {'input': {}, 'target': {}}
+        self.repa_config = repa_map[self.config.model.repa_config]
+        self.repa_projector = nn.ModuleDict({
+            'input': nn.ModuleDict(),
+            'target': nn.ModuleDict()
+        })
+        for repa_type in ['input', 'target']:
+            for key, value in self.repa_config[repa_type].items():
+                projector_dict = nn.ModuleDict()
+                self.repa_label[repa_type][key] = None
+                for idx in value:
+                    self.repa_x[repa_type][idx] = None
+                    projector_dict[str(idx)] = nn.Sequential(
+                        nn.Linear(self.config.model.transformer.d, config.model.projector_dim),
+                        nn.SiLU(),
+                        nn.Linear(config.model.projector_dim, config.model.projector_dim),
+                        nn.SiLU(),
+                        nn.Linear(config.model.projector_dim, z_dim)
+                    )
+                self.repa_projector[repa_type][str(key)] = projector_dict
 
     def _create_tokenizer(self, in_channels, patch_size, d_model):
         """Helper function to create a tokenizer with given config"""
@@ -92,12 +109,13 @@ class Images2LatentScene(nn.Module):
         elif self.config.model.image_tokenizer.type == 'dino':
             import timm
             encoder_type = self.config.model.image_tokenizer.type
-            if 'reg' in encoder_type:
-                encoder = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14_reg')
+            if self.config.model.image_tokenizer.source == 'local':
+                encoder = torch.hub.load('/home/cowa/.cache/torch/hub/facebookresearch_dinov2_main', 'dinov2_vitb14', source='local')
             else:
                 encoder = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14')
             del encoder.head
-            patch_resolution = 32 # TODO if needed for PE-Core/Spatial
+            patch_resolution = self.config.model.image_tokenizer.image_size // self.config.model.image_tokenizer.patch_size
+            # TODO if needed for PE-Core/Spatial
             encoder.pos_embed.data = timm.layers.pos_embed.resample_abs_pos_embed(
                 encoder.pos_embed.data, [patch_resolution, patch_resolution],
             )
@@ -119,16 +137,17 @@ class Images2LatentScene(nn.Module):
                 for param in self.image_encoder.parameters():
                     param.requires_grad = False
                 self.image_encoder.eval()
-            d_model = self.config.model.transformer.d
-            projector = nn.Sequential(
-                nn.Linear(
-                    d_model + encoder_dim,
-                    d_model,
-                        bias=False,
-                    ),
-                )
-            projector.apply(init_weights)
-            self.align_projector = projector
+            if not self.config.training.enable_repa:
+                d_model = self.config.model.transformer.d
+                projector = nn.Sequential(
+                    nn.Linear(
+                        d_model + encoder_dim,
+                        d_model,
+                            bias=False,
+                        ),
+                    )
+                projector.apply(init_weights)
+                self.align_projector = projector
         
         # Target pose tokenizer
         self.target_pose_tokenizer = self._create_tokenizer(
@@ -268,7 +287,7 @@ class Images2LatentScene(nn.Module):
         super().train(mode)
         self.loss_computer.eval()
 
-    def forward_features(self, x, output_layer=None, masks=None):
+    def forward_features(self, x, output_layer=None, repa_type=None, masks=None):
         x = self.image_encoder.prepare_tokens_with_masks(x, masks)
         if output_layer is None:
             output_layer = len(self.image_encoder.blocks)
@@ -277,6 +296,9 @@ class Images2LatentScene(nn.Module):
             if idx >= output_layer:
                 break
             x = blk(x)
+            if repa_type is not None:
+                if idx + 1 in self.repa_label[repa_type].keys():
+                    self.repa_label[repa_type][idx + 1] = x[:, 1:, :]
 
         x_norm = self.image_encoder.norm(x)
         return {
@@ -334,15 +356,48 @@ class Images2LatentScene(nn.Module):
                 x = rearrange(x, "b d h w -> b (h w) d")
             return x
 
+    def get_repa_feature(self, image, repa_type): # TODO distilled 
+        with torch.no_grad():
+            enc_type = self.config.model.image_tokenizer.type
+            inter_mode = 'bicubic'
+            x = rearrange(image, "b v c h w -> (b v) c h w")
+            
+            use_patch_interpolation = self.config.model.image_tokenizer.get("use_patch_interpolation", False)
+            if 'dino' in enc_type:
+                if use_patch_interpolation:
+                    x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
+                    x = torch.nn.functional.interpolate(x, 336, mode=inter_mode)
+                else:
+                    x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
+                    x = torch.nn.functional.interpolate(x, 448, mode=inter_mode)
+            else:
+                raise ValueError(f"Invalid image tokenizer type: {enc_type}")
+            
+            x = self.forward_features(x, None, repa_type)
+
+            if 'dino' in enc_type: 
+                x = x['x_norm_patchtokens']
+            
+            if use_patch_interpolation:
+                current_grid_size = int(x.shape[1] ** 0.5)
+                target_grid_size = 32
+                for idx in self.repa_label[repa_type].keys():
+                    x= self.repa_label[repa_type][idx]
+                    x = rearrange(x, "b (h w) d -> b d h w", h=current_grid_size, w=current_grid_size)
+                    x = torch.nn.functional.interpolate(
+                        x, 
+                        size=(target_grid_size, target_grid_size), 
+                        mode='bilinear', 
+                        align_corners=False
+                    )
+                    self.repa_label[repa_type][idx] = rearrange(x, "b d h w -> b (h w) d")
+
     
     def pass_layers(self, input_tokens, target_tokens, token_shape, gradient_checkpoint=False, checkpoint_every=1):
         """
         concat_tokens: [B, n_input + n_target, D]
         input_patch: int, input tokens数量
         """
-        zs_tilde = None
-        if self.config.training.enable_repa:
-            raise NotImplementedError("repa not supported")
         
         if self.config.model.transformer.input_mode == 'encdec':
             for idx, block in enumerate(self.input_self_attn_blocks):
@@ -358,25 +413,8 @@ class Images2LatentScene(nn.Module):
         # Repeat input tokens for each target view
         v_input, v_target, n_patches = token_shape
         b, _, d = input_tokens.shape
-        use_reentrant = self.config.training.use_compile
-        if self.self_attn_blocks is not None:
-            # compate with original LVSM
-            repeated_input_img_tokens = repeat(
-                input_tokens, 'b np d -> (b v_target) np d', 
-                v_target=v_target, np=n_patches * v_input
-            ) # x = (b*out, np*in, d)
 
-            tokens = torch.cat((repeated_input_img_tokens, target_tokens), dim=1)
-            # x = [MLP(I;P);NLP(P_out)] (b*out, np*in+np, d)   
-            tokens = self.transformer_input_layernorm(tokens)
-            
-            for idx, block in enumerate(self.self_attn_blocks):
-                if gradient_checkpoint: 
-                    tokens = torch.utils.checkpoint.checkpoint(block, tokens, use_reentrant=use_reentrant)
-                else:
-                    tokens = block(tokens)
-
-        # 24 -layer Cross-Attention
+        # 24-layer Cross-Attention
         if self.cross_attn_blocks is not None:
             for idx, block in enumerate(self.cross_attn_blocks):
                 if gradient_checkpoint:
@@ -386,21 +424,27 @@ class Images2LatentScene(nn.Module):
                 else:
                     target_tokens = block(input_tokens, target_tokens)
         
-        # 3. Self-Cross
+        # Self-Cross
         if self.self_cross_blocks is not None:
             for idx, block in enumerate(self.self_cross_blocks):
                 if self.config.model.transformer.input_mode == 'embed' or self.config.model.transformer.input_mode == 'ffn':
                     if self.config.model.transformer.input_scope == 'local':
                         input_tokens = input_tokens.view(b * v_input, n_patches, d)
                         input_tokens = self.input_self_attn_blocks[idx](input_tokens)
+                        if self.config.training.enable_repa:
+                            if idx + 1 in self.repa_x['input'].keys():
+                                self.repa_x['input'][idx + 1] = input_tokens
                         input_tokens = input_tokens.view(b, v_input * n_patches, d)
                     elif self.config.model.transformer.input_scope == 'global':
                         input_tokens = self.input_self_attn_blocks[idx](input_tokens)
                     else:
                         raise ValueError(f"Invalid input scope: {self.config.model.transformer.input_scope}")
                 target_tokens = block(input_tokens, target_tokens)
+                if self.config.training.enable_repa:
+                    if idx + 1 in self.repa_x['target'].keys():
+                        self.repa_x['target'][idx + 1] = target_tokens
 
-        return target_tokens, zs_tilde
+        return target_tokens
             
 
 
@@ -437,7 +481,7 @@ class Images2LatentScene(nn.Module):
             return torch.cat([images * 2.0 - 1.0, pose_cond], dim=2)
     
     
-    def forward(self, data_batch, zs_label, input, target, has_target_image=True, detach=False, train=True):
+    def forward(self, data_batch, input, target, has_target_image=True, detach=False, train=True):
 
         # Process input images
         posed_input_images = self.get_posed_input(
@@ -450,12 +494,16 @@ class Images2LatentScene(nn.Module):
         _, n_patches, d = rgbp_token.size()  # [b*v, n_patches, d]
         rgbp_token = rgbp_token.view(b, v_input * n_patches, d)  # [b, v*n_patches, d]
 
-        if self.image_encoder is not None:
+        if self.image_encoder is not None and not self.config.training.enable_repa:
             input_img_features = self.get_image_feature(input.image) # Linear(encoder(I)) (b, np, d)
             input_img_features = input_img_features.reshape(b, v_input * n_patches, -1)  # [b, v*n_patches, d]
             input_img_tokens = torch.cat((input_img_features, rgbp_token), dim=2)  # [b, v*n_patches, d*2]
             input_img_tokens = self.align_projector(input_img_tokens) # [b, v*n_patches, d]
             # Linear([F;Linear([P;I])]) (b, np, d1+d2) # TODO 图片内self
+        elif self.image_encoder is not None and self.config.training.enable_repa:
+            input_img_tokens = rgbp_token
+            self.get_repa_feature(input.image, 'input')
+            self.get_repa_feature(target.image, 'target')
         else:
             input_img_tokens = rgbp_token
         
@@ -468,17 +516,8 @@ class Images2LatentScene(nn.Module):
 
         checkpoint_every = self.config.training.grad_checkpoint_every
         token_shape = (v_input, v_target, n_patches)
-        target_image_tokens, zs_tilde = self.pass_layers(input_img_tokens, target_pose_tokens, token_shape, gradient_checkpoint=False, checkpoint_every=checkpoint_every)
+        target_image_tokens = self.pass_layers(input_img_tokens, target_pose_tokens, token_shape, gradient_checkpoint=False, checkpoint_every=checkpoint_every)
         # [b * v_target, n_patches, d]
-
-        # REPA
-        if zs_tilde is None and self.config.training.enable_repa:
-            print('REPA at last layer')
-            if detach:
-                target_image_tokens_ = target_image_tokens.clone().detach()
-                zs_tilde = self.projectors(target_image_tokens_)
-            else:
-                zs_tilde = self.projectors(target_image_tokens)
 
         # [b*v_target, n_patches, p*p*3]
         rendered_images = self.image_token_decoder(target_image_tokens)
@@ -496,13 +535,23 @@ class Images2LatentScene(nn.Module):
             c=3
         )
         if has_target_image:
-            loss_metrics = self.loss_computer(
-                rendered_images,
-                target.image,
-                zs_tilde,
-                zs_label,
-                train=(train and self.config.training.enable_repa)
-            )
+            if self.config.training.enable_repa:
+                loss_metrics = self.loss_computer(
+                    rendered_images,
+                    target.image,
+                    self.repa_x,
+                    self.repa_label,
+                    self.repa_projector,
+                    self.repa_config,
+                    self.config.training.enable_repa,
+                    train=(train and self.config.training.enable_repa)
+                )
+            else:
+                loss_metrics = self.loss_computer(
+                    rendered_images,
+                    target.image,
+                    train=train
+                )
         else:
             loss_metrics = None
 

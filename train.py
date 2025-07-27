@@ -98,8 +98,8 @@ model = LVSM(config, logger).to(ddp_info.device)
 if config.training.use_compile:
     model = torch.compile(model)
 model = DDP(model, device_ids=[ddp_info.local_rank], find_unused_parameters=False)
-if config.training.enable_repa:
-    encoders, encoder_types, architectures = load_encoders(config.model.encoder_type, ddp_info.device, 256)
+# if config.training.enable_repa:
+#     encoders, encoder_types, architectures = load_encoders(config.model.encoder_type, ddp_info.device, 256)
 
 optimizer, optimized_param_dict, all_param_dict = create_optimizer(
     model,
@@ -165,18 +165,18 @@ while cur_train_step <= total_train_steps:
     ):
         input, target = model.module.process_data(batch, has_target_image=True, target_has_input = config.training.target_has_input, compute_rays=True)
         zs_label = []
-        if config.training.enable_repa:
-            for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
-                raw_image_ = rearrange(target.image, 'b v c h w -> (b v) c h w')
-                raw_image_ = preprocess_raw_image(raw_image_, encoder_type)
-                with torch.no_grad():
-                    z = encoder.forward_features(raw_image_)
-                    if 'mocov3' in encoder_type: z = z = z[:, 1:] 
-                    if 'dinov2' in encoder_type: z = z['x_norm_patchtokens']
-                    if 'PE-Core' in config.model.encoder_type: z = z[:, 1:, :]
-                zs_label.append(z)
+        # if config.training.enable_repa:
+        #     for encoder, encoder_type, arch in zip(encoders, encoder_types, architectures):
+        #         raw_image_ = rearrange(target.image, 'b v c h w -> (b v) c h w')
+        #         raw_image_ = preprocess_raw_image(raw_image_, encoder_type)
+        #         with torch.no_grad():
+        #             z = encoder.forward_features(raw_image_)
+        #             if 'mocov3' in encoder_type: z = z = z[:, 1:] 
+        #             if 'dinov2' in encoder_type: z = z['x_norm_patchtokens']
+        #             if 'PE-Core' in config.model.encoder_type: z = z[:, 1:, :]
+        #         zs_label.append(z)
 
-        ret_dict = model(batch, zs_label, input, target)
+        ret_dict = model(batch, input, target)
 
     update_grads = (cur_train_step + 1) % grad_accum_steps == 0 or cur_train_step == total_train_steps
     if update_grads:
