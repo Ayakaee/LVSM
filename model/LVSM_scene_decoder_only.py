@@ -710,13 +710,14 @@ class Images2LatentScene(nn.Module):
     @torch.no_grad()
     def load_ckpt(self, load_path):
         if os.path.isdir(load_path):
-            ckpt_names = [file_name for file_name in os.listdir(load_path) if file_name.endswith(".pt")]
+            ckpt_names = [file_name for file_name in os.listdir(load_path) if (file_name.endswith(".pt") and not file_name.startswith('ckpt_t'))]
             ckpt_names = sorted(ckpt_names, key=lambda x: x)
             ckpt_paths = [os.path.join(load_path, ckpt_name) for ckpt_name in ckpt_names]
         else:
             ckpt_paths = [load_path]
         try:
             checkpoint = torch.load(ckpt_paths[-1], map_location="cpu", weights_only=True)
+            print(f'load checkpoint from {ckpt_paths[-1]}')
         except:
             traceback.print_exc()
             print(f"Failed to load {ckpt_paths[-1]}")
