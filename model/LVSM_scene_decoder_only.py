@@ -14,6 +14,7 @@ from utils import camera_utils, data_utils
 from model.transformer import QK_Norm_SelfAttentionBlock, QK_Norm_CrossAttentionBlock, QK_Norm_SelfCrossAttentionBlock, QK_Norm_FFNBlock, init_weights
 from model.loss import LossComputer
 from model.encoder import preprocess_raw_image, IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+from model.repa_pe import PEEncoder
 import core.vision_encoder.pe as pe
 from torchvision.transforms import Normalize
 from model.repa_config import repa_map
@@ -40,6 +41,8 @@ class Images2LatentScene(nn.Module):
 
     def _init_repa(self):
         if 'dino' in self.config.model.image_tokenizer.type:
+            z_dim = 768
+        elif 'pe' in self.config.model.image_tokenizer.type:
             z_dim = 768
         else:
             raise NotImplementedError(f"Unknown image tokenizer type: {self.config.model.image_tokenizer.type}")
@@ -100,12 +103,11 @@ class Images2LatentScene(nn.Module):
             self.image_encoder = encoder
             encoder_dim = 1024
         elif self.config.model.image_tokenizer.type == 'pes':
-            model_type = 'PE-Spatial-L14-448'
-            encoder = pe.VisionTransformer.from_config(model_type, pretrained=True)
-            encoder.init_tensors() # TODO correct???
+            model_type = 'PE-Spatial-B16-512'
+            encoder = PEEncoder.from_config(model_type, pretrained=True)
             # encoder = encoder.to(self.device)
             self.image_encoder = encoder
-            encoder_dim = 1024
+            encoder_dim = 768
         elif self.config.model.image_tokenizer.type == 'dino':
             import timm
             encoder_type = self.config.model.image_tokenizer.type
@@ -334,6 +336,8 @@ class Images2LatentScene(nn.Module):
             
             if self.config.model.image_tokenizer.output_layer is None:
                 x = self.image_encoder.forward_features(x)
+            elif 'pe' in enc_type:
+                x = self.image_encoder.forward_features(x, layer_idx=self.config.model.image_tokenizer.output_layer)
             else:
                 x = self.forward_features(x, self.config.model.image_tokenizer.output_layer)
 
@@ -343,6 +347,8 @@ class Images2LatentScene(nn.Module):
                 x = x[:, 1:, :]
             
             if use_patch_interpolation:
+                if 'pe' in enc_type:
+                    pass
                 current_grid_size = int(x.shape[1] ** 0.5)
                 target_grid_size = 32
                 x = rearrange(x, "b (h w) d -> b d h w", h=current_grid_size, w=current_grid_size)
@@ -370,15 +376,27 @@ class Images2LatentScene(nn.Module):
                 else:
                     x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
                     x = torch.nn.functional.interpolate(x, 448, mode=inter_mode)
+            elif 'pe' in enc_type:
+                resolution = 336 if 'core' in enc_type else 512
+                if use_patch_interpolation:
+                    x = torch.nn.functional.interpolate(x, resolution, mode=inter_mode, align_corners=False)
+                    x = (x - 0.5) / 0.5
+                else:
+                    x = torch.nn.functional.interpolate(x, 448, mode=inter_mode, align_corners=False)
+                    x = (x - 0.5) / 0.5
             else:
                 raise ValueError(f"Invalid image tokenizer type: {enc_type}")
             
-            x = self.forward_features(x, None, repa_type)
-
             if 'dino' in enc_type: 
+                x = self.forward_features(x, None, repa_type=repa_type)
                 x = x['x_norm_patchtokens']
+            elif 'pe' in enc_type:
+                x = self.image_encoder.forward_features(x, repa_type=repa_type, repa_label=self.repa_label[repa_type])
+                x = x[:, 1:, :]
             
             if use_patch_interpolation:
+                if 'pe' in enc_type:
+                    pass
                 current_grid_size = int(x.shape[1] ** 0.5)
                 target_grid_size = 32
                 for idx in self.repa_label[repa_type].keys():
