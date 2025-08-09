@@ -102,3 +102,24 @@ repa_map['8-2'] = {
         8: [2]
     }
 }
+
+repa_map['8-2t'] = {
+    'input': {},
+    'target': {
+        8: [2]
+    }
+}
+
+repa_map['6-2t'] = {
+    'input': {},
+    'target': {
+        6: [2]
+    }
+}
+
+repa_map['8-1t'] = {
+    'input': {},
+    'target': {
+        8: [1]
+    }
+}

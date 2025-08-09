@@ -28,3 +28,7 @@ benchmark设置：以时间为标准，显存拉满，batch size有多大看能�
 如何解释input=2效果不如LVSM
 
 把self-attn换成FFN -> input特征需要背更新，但是不需要看周围的patch
+
+把I;P先经过两层attn编码，再输入到decoder中
+有F的时候，I是否有必要
+repa的projector换成attention

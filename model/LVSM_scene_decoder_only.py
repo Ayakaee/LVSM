@@ -60,13 +60,7 @@ class Images2LatentScene(nn.Module):
                 self.repa_label[repa_type][key] = None
                 for idx in value:
                     self.repa_x[repa_type][idx] = None
-                    projector_dict[str(idx)] = nn.Sequential(
-                        nn.Linear(self.config.model.transformer.d, self.config.model.projector_dim),
-                        nn.SiLU(),
-                        nn.Linear(self.config.model.projector_dim, self.config.model.projector_dim),
-                        nn.SiLU(),
-                        nn.Linear(self.config.model.projector_dim, z_dim)
-                    )
+                    projector_dict[str(idx)] = self._create_repa_projector(self.config.model.transformer.d, self.config.model.projector_dim, z_dim, self.config.model.repa_projector_type)
                 self.repa_projector[repa_type][str(key)] = projector_dict
 
     def _create_tokenizer(self, in_channels, patch_size, d_model):
@@ -85,6 +79,37 @@ class Images2LatentScene(nn.Module):
         )
         tokenizer.apply(init_weights)
         return tokenizer
+    
+    def _create_repa_projector(self, d_model, dim, z_dim, type):
+        config = self.config.model.transformer
+        use_qk_norm = config.get("use_qk_norm", False)
+        use_flex_attention = config.attention_arch == 'flex'
+        if type == 'linear2':    
+            projector = nn.Sequential(
+                nn.Linear(d_model, dim),
+                nn.SiLU(),
+                nn.Linear(dim, z_dim),
+            )
+        elif type == 'linear3':
+            projector = nn.Sequential(
+                nn.Linear(d_model, dim),
+                nn.SiLU(),
+                nn.Linear(dim, dim),
+                nn.SiLU(),
+                nn.Linear(dim, z_dim),
+            )
+        elif type == 'attention':
+            projector = nn.Sequential(
+                nn.Linear(d_model, d_model),
+                nn.SiLU(),
+                QK_Norm_SelfAttentionBlock(
+                    d_model, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
+                ),
+                nn.Linear(d_model, z_dim),
+            )
+        else:
+            raise ValueError(f"Unknown repa projector type: {type}")
+        return projector
 
     def _init_tokenizers(self):
         """Initialize the image and target pose tokenizers, and image token decoder"""
@@ -282,6 +307,16 @@ class Images2LatentScene(nn.Module):
                     block.apply(init_weights)
                 
         self.transformer_input_layernorm = nn.LayerNorm(config.d, elementwise_affine=False)
+
+        if self.config.model.extra_enc is not None:
+            self.extra_enc = nn.Sequential(
+                QK_Norm_SelfAttentionBlock(
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
+                ),
+                QK_Norm_SelfAttentionBlock(
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
+                )
+            )
 
 
     def train(self, mode=True):
@@ -511,7 +546,8 @@ class Images2LatentScene(nn.Module):
         # x = Linear([I; P]) (b, np, d)
         _, n_patches, d = rgbp_token.size()  # [b*v, n_patches, d]
         rgbp_token = rgbp_token.view(b, v_input * n_patches, d)  # [b, v*n_patches, d]
-
+        if self.extra_enc is not None:
+            rgbp_token = self.extra_enc(rgbp_token)
         if self.image_encoder is not None and not self.config.training.enable_repa:
             input_img_features = self.get_image_feature(input.image) # Linear(encoder(I)) (b, np, d)
             input_img_features = input_img_features.reshape(b, v_input * n_patches, -1)  # [b, v*n_patches, d]
