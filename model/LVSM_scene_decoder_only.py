@@ -115,8 +115,11 @@ class Images2LatentScene(nn.Module):
         """Initialize the image and target pose tokenizers, and image token decoder"""
         # Image tokenizer
         self.logger.info(f'create tokenizer with {self.config.model.image_tokenizer.type}')
+        in_channels = self.config.model.image_tokenizer.in_channels
+        if not self.config.model.concat_rgb:
+            in_channels -= 3
         self.rgbp_tokenizer = self._create_tokenizer(
-            in_channels = self.config.model.image_tokenizer.in_channels,
+            in_channels = in_channels,
             patch_size = self.config.model.image_tokenizer.patch_size,
             d_model = self.config.model.transformer.d
         )
@@ -308,7 +311,7 @@ class Images2LatentScene(nn.Module):
                 
         self.transformer_input_layernorm = nn.LayerNorm(config.d, elementwise_affine=False)
 
-        if self.config.model.extra_enc is not None:
+        if self.config.model.extra_enc == 'attn':
             self.extra_enc = nn.Sequential(
                 QK_Norm_SelfAttentionBlock(
                     config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
@@ -317,6 +320,17 @@ class Images2LatentScene(nn.Module):
                     config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
                 )
             )
+        else:
+            self.extra_enc = None
+        
+        if self.extra_enc is not None:
+            for idx, block in enumerate(self.extra_enc):
+                if config.depth_init:
+                    weight_init_std = 0.02 / (2 * (idx + 1)) ** 0.5
+                else:
+                    weight_init_std = 0.02 / (2 * config.n_layer) ** 0.5
+                block.apply(lambda module: init_weights(module, weight_init_std))
+
 
 
     def train(self, mode=True):
@@ -537,9 +551,14 @@ class Images2LatentScene(nn.Module):
     def forward(self, data_batch, input, target, has_target_image=True, detach=False, train=True):
 
         # Process input images
-        posed_input_images = self.get_posed_input(
-            images=input.image, ray_o=input.ray_o, ray_d=input.ray_d
-        )
+        if self.config.model.concat_rgb:
+            posed_input_images = self.get_posed_input(
+                images=input.image, ray_o=input.ray_o, ray_d=input.ray_d
+            )
+        else:
+            posed_input_images = self.get_posed_input(
+                images=None, ray_o=input.ray_o, ray_d=input.ray_d
+            )
         b, v_input, c, h, w = posed_input_images.size()
         # [I; P]
         rgbp_token = self.rgbp_tokenizer(posed_input_images)  # [b*v, n_patches, d]
