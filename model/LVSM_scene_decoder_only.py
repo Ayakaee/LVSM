@@ -35,10 +35,10 @@ class Images2LatentScene(nn.Module):
 
         # REPA
         if config.training.enable_repa:
-            if 'dinov2' in self.config.model.encoder_type:
+            if 'dino' in self.config.model.image_tokenizer.type:
                 z_dim = 768
-            elif 'PE' in self.config.model.encoder_type:
-                z_dim = 1536 if "Spatial" in self.config.model.encoder_type else 1024
+            elif 'PE' in self.config.model.image_tokenizer.type:
+                z_dim = 1536 if "Spatial" in self.config.model.image_tokenizer.type else 1024
             self.projectors = nn.Sequential(
                 nn.Linear(self.config.model.transformer.d, config.model.projector_dim),
                 nn.SiLU(),
