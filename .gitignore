@@ -19,6 +19,7 @@ wandb/
 .DS_Store
 .vscode
 pretrained_model
+objaverse-xl/scripts/rendering/blender-3.2.2-linux-x64/
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

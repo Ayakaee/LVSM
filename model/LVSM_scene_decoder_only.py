@@ -312,14 +312,11 @@ class Images2LatentScene(nn.Module):
         self.transformer_input_layernorm = nn.LayerNorm(config.d, elementwise_affine=False)
 
         if self.config.model.extra_enc == 'attn':
-            self.extra_enc = nn.Sequential(
+            self.extra_enc = nn.ModuleList([
                 QK_Norm_SelfAttentionBlock(
                     config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
-                ),
-                QK_Norm_SelfAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
-                )
-            )
+                ) for _ in range(self.config.model.enc_layer)
+            ])
         else:
             self.extra_enc = None
         
@@ -566,7 +563,8 @@ class Images2LatentScene(nn.Module):
         _, n_patches, d = rgbp_token.size()  # [b*v, n_patches, d]
         rgbp_token = rgbp_token.view(b, v_input * n_patches, d)  # [b, v*n_patches, d]
         if self.extra_enc is not None:
-            rgbp_token = self.extra_enc(rgbp_token)
+            for block in self.extra_enc:
+                rgbp_token = block(rgbp_token)
         if self.image_encoder is not None and not self.config.training.enable_repa:
             input_img_features = self.get_image_feature(input.image) # Linear(encoder(I)) (b, np, d)
             input_img_features = input_img_features.reshape(b, v_input * n_patches, -1)  # [b, v*n_patches, d]

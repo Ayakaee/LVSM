@@ -32,3 +32,11 @@ benchmark设置：以时间为标准，显存拉满，batch size有多大看能�
 把I;P先经过两层attn编码，再输入到decoder中
 有F的时候，I是否有必要
 repa的projector换成attention
+
+目前模型效果：
+1. 同步数下，效果不如lvsm
+2. 同时间下，比优于lvsm
+3. scale到模型极限优劣未知
+
+Target view数量对训练有影响，epoch变少，循环变慢，可能让训练变慢
+测一下input的泛化性，还有可变input的训练效果
