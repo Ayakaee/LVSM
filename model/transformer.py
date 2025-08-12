@@ -300,8 +300,8 @@ class QK_Norm_SelfAttentionBlock(nn.Module):
         )
 
 
-    def forward(self, x):
-        x = x + self.attn(self.norm1(x))
+    def forward(self, x, attn_bias=None):
+        x = x + self.attn(self.norm1(x), attn_bias=attn_bias)
         x = x + self.mlp(self.norm2(x))
         return x
 
@@ -344,8 +344,8 @@ class QK_Norm_CrossAttentionBlock(nn.Module):
             dropout=mlp_dropout,
         )
 
-    def forward(self, kv, q):
-        q = q + self.attn(self.norm_q(q), self.norm_kv(kv))
+    def forward(self, kv, q, attn_bias=None):
+        q = q + self.attn(self.norm_q(q), self.norm_kv(kv), attn_bias=attn_bias)
         q = q + self.mlp(self.norm2(q))
         return q
 
@@ -406,18 +406,19 @@ class QK_Norm_SelfCrossAttentionBlock(nn.Module):
             dropout=mlp_dropout,
         )
 
-    def forward(self, input, target):
+    def forward(self, input, target, attn_bias=None):
         """
         Args:
             input: [b, seq*in, dim]
             target: [b*out, seq, dim]
+            attn_bias: Optional attention bias mask for cross-attention
         """
         target = target + self.self_attn(self.norm1(target))
         bs = input.shape[0]
         bs_out, seq, dim = target.shape
         target = target.view(bs, seq * bs_out // bs, dim)
 
-        target = target + self.cross_attn(self.norm_q(target), self.norm_kv(input))
+        target = target + self.cross_attn(self.norm_q(target), self.norm_kv(input), attn_bias=attn_bias)
         target = target + self.mlp(self.norm2(target))
 
         target = target.view(bs_out, seq, dim)

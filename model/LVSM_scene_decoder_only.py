@@ -18,6 +18,7 @@ from model.repa_pe import PEEncoder
 import core.vision_encoder.pe as pe
 from torchvision.transforms import Normalize
 from model.repa_config import repa_map
+import random
 
 class Images2LatentScene(nn.Module):
     def __init__(self, config, logger=None):
@@ -110,6 +111,48 @@ class Images2LatentScene(nn.Module):
         else:
             raise ValueError(f"Unknown repa projector type: {type}")
         return projector
+
+    def create_attention_mask(self, v_input, v_target, n_patches, device, batch_size, mask_strategy, view_min, view_max):
+        """
+        创建attention mask来屏蔽一些视角
+        
+        Args:
+            v_input: 输入视角数量
+            v_target: 目标视角数量  
+            n_patches: 每个视角的patch数量
+            device: 设备
+            batch_size: batch大小
+            mask_ratio: 屏蔽比例 (0.0-1.0)
+            mask_strategy: 屏蔽策略 ('random', 'first', 'last', 'middle')
+            
+        Returns:
+            attn_mask: [b, v_target, n_patches, v_input * n_patches] 的attention mask
+        """
+        
+        # 创建mask矩阵 [b, n_patches, v_input * n_patches]
+        attn_mask = torch.zeros(batch_size, v_target * n_patches, v_input * n_patches, device=device)
+        
+        # 随机屏蔽一些视角
+        num_masked_views = view_max - random.randint(view_min, view_max)
+        if mask_strategy == 'individual':
+            if num_masked_views > 0:
+                for b_idx in range(batch_size):
+                    # 随机选择要屏蔽的视角
+                    masked_view_indices = torch.randperm(v_input)[:num_masked_views]
+                    print(masked_view_indices)
+                    for view_idx in masked_view_indices:
+                        start_patch = view_idx * n_patches
+                        end_patch = (view_idx + 1) * n_patches
+                        attn_mask[b_idx, :, start_patch:end_patch] = float('-inf')
+        elif mask_strategy == 'unified':
+            if num_masked_views > 0:
+                masked_view_indices = torch.randperm(v_input)[:num_masked_views]
+                print(masked_view_indices)
+                for view_idx in masked_view_indices:
+                    start_patch = view_idx * n_patches
+                    end_patch = (view_idx + 1) * n_patches
+                    attn_mask[:, :, start_patch:end_patch] = float('-inf')
+        return attn_mask
 
     def _init_tokenizers(self):
         """Initialize the image and target pose tokenizers, and image token decoder"""
@@ -457,11 +500,15 @@ class Images2LatentScene(nn.Module):
                     self.repa_label[repa_type][idx] = rearrange(x, "b d h w -> b (h w) d")
 
     
-    def pass_layers(self, input_tokens, target_tokens, token_shape, gradient_checkpoint=False, checkpoint_every=1):
+    def pass_layers(self, input_tokens, target_tokens, token_shape, gradient_checkpoint=False, checkpoint_every=1, attn_mask=None):
         """
         concat_tokens: [B, n_input + n_target, D]
         input_patch: int, input tokens数量
+        attn_mask: Optional attention mask for cross attention
         """
+        # 获取token形状信息
+        v_input, v_target, n_patches = token_shape
+        b, _, d = input_tokens.shape
         
         if self.config.model.transformer.input_mode == 'encdec':
             for idx, block in enumerate(self.input_self_attn_blocks):
@@ -475,8 +522,6 @@ class Images2LatentScene(nn.Module):
                     raise ValueError(f"Invalid input scope: {self.config.model.transformer.input_scope}")
         # 24-layer Self-Attention
         # Repeat input tokens for each target view
-        v_input, v_target, n_patches = token_shape
-        b, _, d = input_tokens.shape
 
         # 24-layer Cross-Attention
         if self.cross_attn_blocks is not None:
@@ -485,8 +530,8 @@ class Images2LatentScene(nn.Module):
                     target_tokens = torch.utils.checkpoint.checkpoint(
                         block, input_tokens, target_tokens, use_reentrant=use_reentrant
                     )
-                else:
-                    target_tokens = block(input_tokens, target_tokens)
+                else:   
+                    target_tokens = block(input_tokens, target_tokens, attn_bias=attn_mask)
         
         # Self-Cross
         if self.self_cross_blocks is not None:
@@ -503,15 +548,15 @@ class Images2LatentScene(nn.Module):
                         input_tokens = self.input_self_attn_blocks[idx](input_tokens)
                     else:
                         raise ValueError(f"Invalid input scope: {self.config.model.transformer.input_scope}")
-                target_tokens = block(input_tokens, target_tokens)
+                
+                target_tokens = block(input_tokens, target_tokens, attn_bias=attn_mask)
+                    
                 if self.config.training.enable_repa:
                     if idx + 1 in self.repa_x['target'].keys():
                         self.repa_x['target'][idx + 1] = target_tokens
 
         return target_tokens
             
-
-
     # @torch._dynamo.assume_constant_result
     def get_posed_input(self, images=None, ray_o=None, ray_d=None, method="default_plucker"):
         '''
@@ -587,7 +632,25 @@ class Images2LatentScene(nn.Module):
 
         checkpoint_every = self.config.training.grad_checkpoint_every
         token_shape = (v_input, v_target, n_patches)
-        target_image_tokens = self.pass_layers(input_img_tokens, target_pose_tokens, token_shape, gradient_checkpoint=False, checkpoint_every=checkpoint_every)
+        
+        # 生成attention mask（如果启用）
+        attn_mask = None
+        if self.config.training.use_view_masking and train:
+            attn_mask = self.create_attention_mask(
+                v_input, v_target, n_patches,
+                input_img_tokens.device,
+                batch_size=b,
+                mask_strategy=self.config.training.view_mask_strategy,
+                view_min=self.config.training.view_min,
+                view_max=self.config.training.view_max
+            )
+        
+        target_image_tokens = self.pass_layers(
+            input_img_tokens, target_pose_tokens, token_shape, 
+            gradient_checkpoint=False, checkpoint_every=checkpoint_every, 
+            attn_mask=attn_mask
+        )
+
         # [b * v_target, n_patches, d]
 
         # [b*v_target, n_patches, p*p*3]

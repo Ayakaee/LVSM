@@ -85,6 +85,7 @@ dataset_name = config.training.get("dataset_name", "data.dataset.Dataset")
 module, class_name = dataset_name.rsplit(".", 1)
 Dataset = importlib.import_module(module).__dict__[class_name]
 dataset = Dataset(config)
+assert config.training.view_max == config.training.num_input_views
 
 datasampler = DistributedSampler(dataset)
 dataloader = DataLoader(
