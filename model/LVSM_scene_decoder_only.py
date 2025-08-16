@@ -39,6 +39,12 @@ class Images2LatentScene(nn.Module):
         # Initialize REPA
         if self.config.training.enable_repa:
             self._init_repa()
+        
+        self.num_registers = self.config.model.num_registers
+        self.dim = self.config.model.transformer.d
+        self.register_tokens = nn.Parameter(
+            torch.randn(1, self.num_registers, self.dim)
+        )
 
     def _init_repa(self):
         if 'dino' in self.config.model.image_tokenizer.type:
@@ -498,7 +504,7 @@ class Images2LatentScene(nn.Module):
                     self.repa_label[repa_type][idx] = rearrange(x, "b d h w -> b (h w) d")
 
     
-    def pass_layers(self, input_tokens, target_tokens, token_shape, gradient_checkpoint=False, checkpoint_every=1, attn_mask=None):
+    def pass_layers(self, input_tokens, target_tokens, registers, token_shape, gradient_checkpoint=False, checkpoint_every=1, attn_mask=None):
         """
         concat_tokens: [B, n_input + n_target, D]
         input_patch: int, input tokens数量
@@ -506,7 +512,9 @@ class Images2LatentScene(nn.Module):
         """
         # 获取token形状信息
         v_input, v_target, n_patches = token_shape
-        b, _, d = input_tokens.shape
+        bv, _, d = input_tokens.shape
+        b = bv // v_input
+        input_tokens = torch.cat([registers, input_tokens], dim=1)
         
         if self.config.model.transformer.input_mode == 'encdec':
             for idx, block in enumerate(self.input_self_attn_blocks):
@@ -536,12 +544,13 @@ class Images2LatentScene(nn.Module):
             for idx, block in enumerate(self.self_cross_blocks):
                 if self.config.model.transformer.input_mode == 'embed' or self.config.model.transformer.input_mode == 'ffn':
                     if self.config.model.transformer.input_scope == 'local':
-                        input_tokens = input_tokens.view(b * v_input, n_patches, d)
+                        print(input_tokens.shape)
+                        input_tokens = input_tokens.view(b * v_input, n_patches + self.num_registers, d)
                         input_tokens = self.input_self_attn_blocks[idx](input_tokens)
                         if self.config.training.enable_repa:
                             if idx + 1 in self.repa_x['input'].keys():
                                 self.repa_x['input'][idx + 1] = input_tokens
-                        input_tokens = input_tokens.view(b, v_input * n_patches, d)
+                        input_tokens = input_tokens.view(b, v_input * (n_patches + self.num_registers), d)
                     elif self.config.model.transformer.input_scope == 'global':
                         input_tokens = self.input_self_attn_blocks[idx](input_tokens)
                     else:
@@ -603,16 +612,21 @@ class Images2LatentScene(nn.Module):
         # [I; P]
         rgbp_token = self.rgbp_tokenizer(posed_input_images)  # [b*v, n_patches, d]
         # x = Linear([I; P]) (b, np, d)
-        _, n_patches, d = rgbp_token.size()  # [b*v, n_patches, d]
-        rgbp_token = rgbp_token.view(b, v_input * n_patches, d)  # [b, v*n_patches, d]
+        bv, n_patches, d = rgbp_token.size()  # [b*v, n_patches, d]
+        # rgbp_token = rgbp_token.view(b, v_input * n_patches, d)  # [b, v*n_patches, d]
+        registers = self.register_tokens.expand(bv, -1, -1)
+        # 2. 将 register tokens 预置 (prepend) 到 input_tokens 前面
+        rgbp_token = torch.cat([registers, rgbp_token], dim=1)
         if self.extra_enc is not None:
             for block in self.extra_enc:
                 rgbp_token = block(rgbp_token)
+        registers = rgbp_token[:, :self.num_registers, :]
+        rgbp_token = rgbp_token[:, self.num_registers:, :]
         if self.image_encoder is not None and not self.config.training.enable_repa:
             input_img_features = self.get_image_feature(input.image) # Linear(encoder(I)) (b, np, d)
-            input_img_features = input_img_features.reshape(b, v_input * n_patches, -1)  # [b, v*n_patches, d]
-            input_img_tokens = torch.cat((input_img_features, rgbp_token), dim=2)  # [b, v*n_patches, d*2]
-            input_img_tokens = self.align_projector(input_img_tokens) # [b, v*n_patches, d]
+            input_img_features = input_img_features.reshape(b * v_input, n_patches, -1)  # [b*v, n_patches, d]
+            input_img_tokens = torch.cat((input_img_features, rgbp_token), dim=2)  # [b*v, n_patches, d*2]
+            input_img_tokens = self.align_projector(input_img_tokens) # [b*v, n_patches, d]
             # Linear([F;Linear([P;I])]) (b, np, d1+d2) # TODO 图片内self
         elif self.image_encoder is not None and self.config.training.enable_repa:
             input_img_tokens = rgbp_token
@@ -644,7 +658,7 @@ class Images2LatentScene(nn.Module):
             )
         
         target_image_tokens = self.pass_layers(
-            input_img_tokens, target_pose_tokens, token_shape, 
+            input_img_tokens, target_pose_tokens, registers, token_shape, 
             gradient_checkpoint=False, checkpoint_every=checkpoint_every, 
             attn_mask=attn_mask
         )
