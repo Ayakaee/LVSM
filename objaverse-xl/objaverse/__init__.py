@@ -11,7 +11,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from tqdm import tqdm
 
-BASE_PATH = os.path.join(os.path.expanduser("~"), ".objaverse")
+# BASE_PATH = os.path.join(os.path.expanduser("~"), ".objaverse")
+BASE_PATH = '/inspire/hdd/global_user/chenxinyan-240108120066/yihang/LVSM/dataset'
 
 __version__ = "<REPLACE_WITH_VERSION>"
 _VERSIONED_PATH = os.path.join(BASE_PATH, "hf-objaverse-v1")
@@ -66,6 +67,7 @@ def _load_object_paths() -> Dict[str, str]:
     """
     object_paths_file = "object-paths.json.gz"
     local_path = os.path.join(_VERSIONED_PATH, object_paths_file)
+    print(local_path)
     if not os.path.exists(local_path):
         hf_url = f"https://huggingface.co/datasets/allenai/objaverse/resolve/main/{object_paths_file}"
         # wget the file and put it in local_path
@@ -124,7 +126,7 @@ def _download_object(
     return uid, local_path
 
 
-def load_objects(uids: List[str], download_processes: int = 1) -> Dict[str, str]:
+def load_objects(uids: List[str], start_idx:str, end_idx: str, download_processes: int = 1) -> Dict[str, str]:
     """Return the path to the object files for the given uids.
 
     If the object is not already downloaded, it will be downloaded.
@@ -172,6 +174,9 @@ def load_objects(uids: List[str], download_processes: int = 1) -> Dict[str, str]
                 warnings.warn(f"Could not find object with uid {uid}. Skipping it.")
                 continue
             object_path = object_paths[uid]
+            if not (object_path[5:12] >= start_idx and object_path[5:12] <= end_idx):
+                continue
+            # print(object_path[5:12])
             local_path = os.path.join(_VERSIONED_PATH, object_path)
             if not os.path.exists(local_path):
                 args.append((uid, object_paths[uid]))

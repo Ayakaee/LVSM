@@ -20,6 +20,7 @@ from datetime import datetime
 
 # Load config and read(override) arguments from CLI
 config = init_config()
+config.training.num_views = config.training.num_input_views + config.training.num_target_views
 
 os.environ["OMP_NUM_THREADS"] = str(config.training.get("num_threads", 1))
 
@@ -85,7 +86,7 @@ dataset_name = config.training.get("dataset_name", "data.dataset.Dataset")
 module, class_name = dataset_name.rsplit(".", 1)
 Dataset = importlib.import_module(module).__dict__[class_name]
 dataset = Dataset(config)
-assert config.training.view_max == config.training.num_input_views
+assert (not config.training.use_view_masking) or config.training.view_max == config.training.num_input_views
 
 datasampler = DistributedSampler(dataset)
 dataloader = DataLoader(

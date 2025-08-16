@@ -11,6 +11,7 @@ from utils.metric_utils import export_results, summarize_evaluation
 
 # Load config and read(override) arguments from CLI
 config = init_config()
+config.training.num_views = config.training.num_input_views + config.training.num_target_views
 log_file = config.training.get("log_file", f'logs/{config.inference.checkpoint_dir.split("/")[-1]}_eval.log')
 logger = init_logging(log_file)
 

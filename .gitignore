@@ -2,6 +2,7 @@ metric_checkpoint
 pretrained_models
 preprocessed_data
 experiments
+dataset/
 logs
 configs/
 back/
@@ -46,6 +47,7 @@ share/python-wheels/
 *.egg
 MANIFEST
 minLRM/paper_demo
+*.deb
 
 # PyInstaller
 #  Usually these files are written by a python script from a template

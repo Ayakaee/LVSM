@@ -139,7 +139,6 @@ class Images2LatentScene(nn.Module):
                 for b_idx in range(batch_size):
                     # 随机选择要屏蔽的视角
                     masked_view_indices = torch.randperm(v_input)[:num_masked_views]
-                    print(masked_view_indices)
                     for view_idx in masked_view_indices:
                         start_patch = view_idx * n_patches
                         end_patch = (view_idx + 1) * n_patches
@@ -147,7 +146,6 @@ class Images2LatentScene(nn.Module):
         elif mask_strategy == 'unified':
             if num_masked_views > 0:
                 masked_view_indices = torch.randperm(v_input)[:num_masked_views]
-                print(masked_view_indices)
                 for view_idx in masked_view_indices:
                     start_patch = view_idx * n_patches
                     end_patch = (view_idx + 1) * n_patches

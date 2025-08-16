@@ -18,9 +18,9 @@ def view_selector(frames, num_views=5, min_frame_dist=25, max_frame_dist=192):
     return image_indices
 
 list_path = 'data/test/full_list.txt'  # 场景列表，每行一个json路径
-output_json = 'data/view_idx_list-8-24.json'       # 输出文件名
-input_num_views = 8
-output_num_views = 24
+output_json = 'data/view_idx_list-4-3.json'       # 输出文件名
+input_num_views = 4
+output_num_views = 3
 view_idx_list = {}
 
 with open(list_path, 'r') as f:
