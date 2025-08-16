@@ -531,20 +531,25 @@ class Images2LatentScene(nn.Module):
 
         # 24-layer Cross-Attention
         if self.cross_attn_blocks is not None:
-            for idx, block in enumerate(self.cross_attn_blocks):
-                if gradient_checkpoint:
-                    target_tokens = torch.utils.checkpoint.checkpoint(
-                        block, input_tokens, target_tokens, use_reentrant=use_reentrant
-                    )
-                else:   
-                    target_tokens = block(input_tokens, target_tokens, attn_bias=attn_mask)
+            target_tokens = target_tokens.view(b, v_target * n_patches, d)
+            for idx in range(len(self.cross_attn_blocks) // 2):
+                if self.config.model.transformer.input_mode == 'embed' or self.config.model.transformer.input_mode == 'ffn':
+                    if self.config.model.transformer.input_scope == 'local':
+                        input_tokens = input_tokens.view(b * v_input, n_patches + self.num_registers, d)
+                        input_tokens = self.input_self_attn_blocks[idx](input_tokens)
+                        if self.config.training.enable_repa:
+                            if idx + 1 in self.repa_x['input'].keys():
+                                self.repa_x['input'][idx + 1] = input_tokens
+                        input_tokens = input_tokens.view(b, v_input * (n_patches + self.num_registers), d)
+                target_tokens = self.cross_attn_blocks[2*idx](input_tokens, target_tokens, attn_bias=attn_mask)
+                target_tokens = self.cross_attn_blocks[2*idx+1](input_tokens, target_tokens, attn_bias=attn_mask)
+            target_tokens = target_tokens.view(b * v_target, n_patches, d)
         
         # Self-Cross
         if self.self_cross_blocks is not None:
             for idx, block in enumerate(self.self_cross_blocks):
                 if self.config.model.transformer.input_mode == 'embed' or self.config.model.transformer.input_mode == 'ffn':
                     if self.config.model.transformer.input_scope == 'local':
-                        print(input_tokens.shape)
                         input_tokens = input_tokens.view(b * v_input, n_patches + self.num_registers, d)
                         input_tokens = self.input_self_attn_blocks[idx](input_tokens)
                         if self.config.training.enable_repa:
@@ -561,7 +566,6 @@ class Images2LatentScene(nn.Module):
                 if self.config.training.enable_repa:
                     if idx + 1 in self.repa_x['target'].keys():
                         self.repa_x['target'][idx + 1] = target_tokens
-
         return target_tokens
             
     # @torch._dynamo.assume_constant_result

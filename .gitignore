@@ -5,6 +5,7 @@ experiments
 dataset/
 logs
 configs/
+dinov3/
 back/
 data/
 logs/
