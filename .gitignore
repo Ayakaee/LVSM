@@ -13,6 +13,7 @@ todo.md
 *.sh
 *.pt
 *.txt
+*.csv
 experiments/
 pretrained/
 log/

@@ -43,7 +43,7 @@ def main():
     """主函数"""
     # 模型文件URL
     model_urls = {
-        "dinov3_vitl16_pretrain_lvd1689m": "https://dl.fbaipublicfiles.com/dinov3/dinov3_vitl16/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth",
+        "dinov3_vitl16_pretrain_lvd1689m": "https://ai.meta.com/resources/models-and-libraries/dinov3-downloads/",
         "dinov3_vitl16_dinotxt_vision_head_and_text_encoder": "https://dl.fbaipublicfiles.com/dinov3/dinov3_vitl16/dinov3_vitl16_dinotxt_vision_head_and_text_encoder-a442d8f5.pth"
     }
     
