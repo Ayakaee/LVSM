@@ -42,9 +42,12 @@ class Images2LatentScene(nn.Module):
         
         self.num_registers = self.config.model.num_registers
         self.dim = self.config.model.transformer.d
-        self.register_tokens = nn.Parameter(
-            torch.randn(1, self.num_registers, self.dim)
-        )
+        if self.num_registers == 0:
+            self.register_tokens = None
+        else:
+            self.register_tokens = nn.Parameter(
+                torch.randn(1, self.num_registers, self.dim)
+            )
 
     def _init_repa(self):
         if 'dino' in self.config.model.image_tokenizer.type:
@@ -183,7 +186,7 @@ class Images2LatentScene(nn.Module):
             # encoder = encoder.to(self.device)
             self.image_encoder = encoder
             encoder_dim = 768
-        elif self.config.model.image_tokenizer.type == 'dino':
+        elif self.config.model.image_tokenizer.type == 'dinov2':
             import timm
             encoder_type = self.config.model.image_tokenizer.type
             if self.config.model.image_tokenizer.source == 'local':
@@ -196,6 +199,24 @@ class Images2LatentScene(nn.Module):
             encoder.pos_embed.data = timm.layers.pos_embed.resample_abs_pos_embed(
                 encoder.pos_embed.data, [patch_resolution, patch_resolution],
             )
+            encoder.head = torch.nn.Identity()
+            # encoder = encoder.to(self.device)
+            self.image_encoder = encoder
+            encoder_dim = 768
+        elif self.config.model.image_tokenizer.type == 'dinov3':
+            import timm
+            encoder = torch.hub.load(
+                repo_or_dir='dinov3',
+                model='dinov3_vitb16',
+                source='local',
+                pretrained=False
+            )
+            state_dict = torch.load(f"pretrained/dinov3_vitb16_pretrain_lvd1689m-73cec8be.pth", map_location="cpu")
+            encoder.load_state_dict(state_dict)
+            # patch_resolution = self.config.model.image_tokenizer.image_size // self.config.model.image_tokenizer.patch_size
+            # encoder.rope_embed.data = timm.layers.pos_embed.resample_abs_pos_embed(
+            #     encoder.rope_embed.data, [patch_resolution, patch_resolution],
+            # )
             encoder.head = torch.nn.Identity()
             # encoder = encoder.to(self.device)
             self.image_encoder = encoder
@@ -404,6 +425,55 @@ class Images2LatentScene(nn.Module):
             "masks": masks,
         }
 
+    def forward_features_v3(self, x_list, masks_list, output_layer=None, repa_type=None):
+        x = []
+        rope = []
+        if output_layer is None:
+            output_layer = len(self.image_encoder.blocks)
+        for t_x, t_masks in zip(x_list, masks_list):
+            t2_x, hw_tuple = self.image_encoder.prepare_tokens_with_masks(t_x, t_masks)
+            x.append(t2_x)
+            rope.append(hw_tuple)
+        for idx, blk in enumerate(self.image_encoder.blocks):
+            if self.image_encoder.rope_embed is not None:
+                rope_sincos = [self.image_encoder.rope_embed(H=H, W=W) for H, W in rope]
+            else:
+                rope_sincos = [None for r in rope]
+            if idx >= output_layer:
+                break
+            x = blk(x, rope_sincos)
+            if repa_type is not None:
+                if idx + 1 in self.repa_label[repa_type].keys():
+                    self.repa_label[repa_type][idx + 1] = x[0][:, 5:, :]
+            # x = blk(x, rope_sincos)
+        all_x = x
+        output = []
+        for idx, (x, masks) in enumerate(zip(all_x, masks_list)):
+            if self.image_encoder.untie_cls_and_patch_norms or self.image_encoder.untie_global_and_local_cls_norm:
+                if self.image_encoder.untie_global_and_local_cls_norm and self.image_encoder.training and idx == 1:
+                    # Assume second entry of list corresponds to local crops.
+                    # We only ever apply this during training.
+                    x_norm_cls_reg = self.image_encoder.local_cls_norm(x[:, : self.image_encoder.n_storage_tokens + 1])
+                elif self.image_encoder.untie_cls_and_patch_norms:
+                    x_norm_cls_reg = self.image_encoder.cls_norm(x[:, : self.image_encoder.n_storage_tokens + 1])
+                else:
+                    x_norm_cls_reg = self.image_encoder.norm(x[:, : self.image_encoder.n_storage_tokens + 1])
+                x_norm_patch = self.image_encoder.norm(x[:, self.image_encoder.n_storage_tokens + 1 :])
+            else:
+                x_norm = self.image_encoder.norm(x)
+                x_norm_cls_reg = x_norm[:, : self.image_encoder.n_storage_tokens + 1]
+                x_norm_patch = x_norm[:, self.image_encoder.n_storage_tokens + 1 :]
+            output.append(
+                {
+                    "x_norm_clstoken": x_norm_cls_reg[:, 0],
+                    "x_storage_tokens": x_norm_cls_reg[:, 1:],
+                    "x_norm_patchtokens": x_norm_patch,
+                    "x_prenorm": x,
+                    "masks": masks,
+                }
+            )
+        return output
+    
     def get_image_feature(self, image): # TODO distilled 
         with torch.no_grad():
             enc_type = self.config.model.image_tokenizer.type
@@ -431,11 +501,15 @@ class Images2LatentScene(nn.Module):
                 x = self.image_encoder.forward_features(x)
             elif 'pe' in enc_type:
                 x = self.image_encoder.forward_features(x, layer_idx=self.config.model.image_tokenizer.output_layer)
-            else:
+            elif 'dinov2' in enc_type:
                 x = self.forward_features(x, self.config.model.image_tokenizer.output_layer)
+            elif 'dinov3' in enc_type:
+                x = self.forward_features_v3([x], [None], self.config.model.image_tokenizer.output_layer)
 
-            if 'dino' in enc_type: 
+            if 'dinov2' in enc_type: 
                 x = x['x_norm_patchtokens']
+            elif 'dinov3' in enc_type: 
+                x = x[0]['x_norm_patchtokens']
             if 'pe' in enc_type: 
                 x = x[:, 1:, :]
             
@@ -469,6 +543,9 @@ class Images2LatentScene(nn.Module):
                 else:
                     x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
                     x = torch.nn.functional.interpolate(x, 448, mode=inter_mode)
+            elif 'dinov3' in enc_type:
+                x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
+                x = torch.nn.functional.interpolate(x, 512, mode='bicubic')
             elif 'pe' in enc_type:
                 resolution = 336 if 'core' in enc_type else 512
                 if use_patch_interpolation:
@@ -480,8 +557,11 @@ class Images2LatentScene(nn.Module):
             else:
                 raise ValueError(f"Invalid image tokenizer type: {enc_type}")
             
-            if 'dino' in enc_type: 
+            if 'dinov2' in enc_type: 
                 x = self.forward_features(x, None, repa_type=repa_type)
+                x = x['x_norm_patchtokens']
+            elif 'dinov3' in enc_type: 
+                x = self.forward_features_v3([x], [None], None, repa_type=repa_type)[0]
                 x = x['x_norm_patchtokens']
             elif 'pe' in enc_type:
                 x = self.image_encoder.forward_features(x, repa_type=repa_type, repa_label=self.repa_label[repa_type])
@@ -493,12 +573,12 @@ class Images2LatentScene(nn.Module):
                 current_grid_size = int(x.shape[1] ** 0.5)
                 target_grid_size = 32
                 for idx in self.repa_label[repa_type].keys():
-                    x= self.repa_label[repa_type][idx]
+                    x = self.repa_label[repa_type][idx]
                     x = rearrange(x, "b (h w) d -> b d h w", h=current_grid_size, w=current_grid_size)
                     x = torch.nn.functional.interpolate(
                         x, 
                         size=(target_grid_size, target_grid_size), 
-                        mode='bilinear', 
+                        mode='bicubic', 
                         align_corners=False
                     )
                     self.repa_label[repa_type][idx] = rearrange(x, "b d h w -> b (h w) d")
@@ -514,7 +594,8 @@ class Images2LatentScene(nn.Module):
         v_input, v_target, n_patches = token_shape
         bv, _, d = input_tokens.shape
         b = bv // v_input
-        input_tokens = torch.cat([registers, input_tokens], dim=1)
+        if self.num_registers > 0:
+            input_tokens = torch.cat([registers, input_tokens], dim=1)
         
         if self.config.model.transformer.input_mode == 'encdec':
             for idx, block in enumerate(self.input_self_attn_blocks):
@@ -539,7 +620,7 @@ class Images2LatentScene(nn.Module):
                         input_tokens = self.input_self_attn_blocks[idx](input_tokens)
                         if self.config.training.enable_repa:
                             if idx + 1 in self.repa_x['input'].keys():
-                                self.repa_x['input'][idx + 1] = input_tokens
+                                self.repa_x['input'][idx + 1] = input_tokens[:, self.num_registers:, :]
                         input_tokens = input_tokens.view(b, v_input * (n_patches + self.num_registers), d)
                 target_tokens = self.cross_attn_blocks[2*idx](input_tokens, target_tokens, attn_bias=attn_mask)
                 target_tokens = self.cross_attn_blocks[2*idx+1](input_tokens, target_tokens, attn_bias=attn_mask)
@@ -554,7 +635,7 @@ class Images2LatentScene(nn.Module):
                         input_tokens = self.input_self_attn_blocks[idx](input_tokens)
                         if self.config.training.enable_repa:
                             if idx + 1 in self.repa_x['input'].keys():
-                                self.repa_x['input'][idx + 1] = input_tokens
+                                self.repa_x['input'][idx + 1] = input_tokens[:, self.num_registers:, :]
                         input_tokens = input_tokens.view(b, v_input * (n_patches + self.num_registers), d)
                     elif self.config.model.transformer.input_scope == 'global':
                         input_tokens = self.input_self_attn_blocks[idx](input_tokens)
@@ -618,13 +699,19 @@ class Images2LatentScene(nn.Module):
         # x = Linear([I; P]) (b, np, d)
         bv, n_patches, d = rgbp_token.size()  # [b*v, n_patches, d]
         # rgbp_token = rgbp_token.view(b, v_input * n_patches, d)  # [b, v*n_patches, d]
-        registers = self.register_tokens.expand(bv, -1, -1)
-        # 2. 将 register tokens 预置 (prepend) 到 input_tokens 前面
-        rgbp_token = torch.cat([registers, rgbp_token], dim=1)
+        if self.num_registers == 0:
+            registers = None
+        else:
+            registers = self.register_tokens.expand(bv, -1, -1)
+            rgbp_token = torch.cat([registers, rgbp_token], dim=1)
         if self.extra_enc is not None:
-            for block in self.extra_enc:
+            for idx, block in enumerate(self.extra_enc):
                 rgbp_token = block(rgbp_token)
-        registers = rgbp_token[:, :self.num_registers, :]
+                if self.config.training.enable_repa:
+                    if idx + 101 in self.repa_x['input'].keys():
+                        self.repa_x['input'][idx + 101] = rgbp_token[:, self.num_registers:, :]
+        if self.num_registers > 0:
+            registers = rgbp_token[:, :self.num_registers, :]
         rgbp_token = rgbp_token[:, self.num_registers:, :]
         if self.image_encoder is not None and not self.config.training.enable_repa:
             input_img_features = self.get_image_feature(input.image) # Linear(encoder(I)) (b, np, d)

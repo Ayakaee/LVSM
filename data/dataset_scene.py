@@ -153,6 +153,7 @@ class Dataset(Dataset):
     def __getitem__(self, idx):
         # try:
         scene_path = self.all_scene_paths[idx].strip()
+        # print(idx, scene_path)
         data_json = json.load(open(scene_path, 'r'))
         frames = data_json["frames"]
         scene_name = data_json["scene_name"]

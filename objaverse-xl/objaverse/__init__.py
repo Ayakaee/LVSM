@@ -149,6 +149,8 @@ def load_objects(uids: List[str], start_idx:str, end_idx: str, download_processe
             if uid not in object_paths:
                 warnings.warn(f"Could not find object with uid {uid}. Skipping it.")
                 continue
+            if not (object_path[5:12] >= start_idx and object_path[5:12] <= end_idx):
+                continue
             object_path = object_paths[uid]
             local_path = os.path.join(_VERSIONED_PATH, object_path)
             if os.path.exists(local_path):
