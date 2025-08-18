@@ -10,6 +10,38 @@ from setup import init_config, init_distributed, init_logging
 from utils.metric_utils import export_results, summarize_evaluation
 import argparse
 import numpy as np
+from get_attn_map import get_attention_weights_external, visualize_attention_weights
+
+def visualize_attention_maps(model, images, layer_idx=-1):
+    """
+    可视化Vision Transformer的注意力图
+    """
+    model.eval()
+    attention_maps = []
+    
+    # 注册hook来获取注意力权重
+    def hook_fn(module, input, output):
+        attention_maps.append(output)  # attention weights
+    
+    # 注册hook到指定层
+    handle = model.blocks[layer_idx].attn.register_forward_hook(hook_fn)
+    
+    with torch.no_grad():
+        _ = model(images)
+    
+    handle.remove()
+    
+    return attention_maps[0]
+
+def create_attention_visualization(image, attention_map, model_name):
+    # 将注意力图调整到图像尺寸
+    h, w = image.shape[:2]
+    attention_resized = cv2.resize(attention_map, (w, h))
+    
+    # 创建热力图
+    heatmap = plt.cm.plasma(attention_resized)
+    
+    return heatmap
 
 # 添加命令行参数解析
 parser = argparse.ArgumentParser(description='LVSM模型推理')
@@ -73,6 +105,14 @@ model = LVSM(config, logger).to(ddp_info.device)
 model = DDP(model, device_ids=[ddp_info.local_rank])
 model.module.load_ckpt(model_path)
 
+attention_maps = []
+def hook_fn(module, input, output):
+    print('input', input[0].shape)
+    print('output', output.shape)
+    attention_maps.append(output[1])  # attention weights
+
+# 注册hook到指定层
+handle = model.module.input_self_attn_blocks[5].attn.register_forward_hook(hook_fn)
 
 if ddp_info.is_main_process:  
     print(f"Running inference; save results to: {config.inference.checkpoint_dir}")
@@ -122,7 +162,7 @@ with torch.no_grad(), torch.autocast(
                         print(f"保存特征 {layer_name} 到 {feature_path}, 形状: {np_features.shape}")
         else:
             result = model(batch, input, target, train=False)
-            
+        result, attention_weights = get_attention_weights_external(model, batch, input, target, layer_idx=5, block_type='self_cross')
         if config.inference.get("render_video", False):
             result= model.module.render_video(result, **config.inference.render_video_config)
         export_results(result, config.inference.checkpoint_dir, compute_metrics=config.inference.get("compute_metrics"))
@@ -134,6 +174,14 @@ with torch.no_grad(), torch.autocast(
         
         if ddp_info.is_main_process:
             print(f"处理批次 {batch_idx + 1} 完成")
+        break
+
+print(attention_weights.shape)
+# 把attn weight保存到文件
+np.save('attn_weights.npy', attention_weights.cpu().numpy())
+
+# 可视化注意力图
+# visualize_attention_weights(attention_weights, 'input_self_attn_blocks[5].attn', 'attn_weights', save_heatmap=True, save_attention_pattern=True)
 
 dist.barrier()
 
@@ -141,9 +189,6 @@ if ddp_info.is_main_process and config.inference.get("compute_metrics", False):
     summarize_evaluation(config.inference.checkpoint_dir)
     if config.inference.get("generate_website", True):
         os.system(f"python generate_html.py {config.inference.checkpoint_dir}")
-
-if ddp_info.is_main_process and config.inference.extract_features:
-    print(f"特征提取完成！所有特征已保存到: {config.inference.feature_save_dir}")
 
 dist.barrier()
 dist.destroy_process_group()

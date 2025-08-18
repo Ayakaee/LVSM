@@ -2,6 +2,7 @@ metric_checkpoint
 pretrained_models
 preprocessed_data
 experiments
+extracted_features/
 dataset/
 logs
 configs/
@@ -14,6 +15,7 @@ todo.md
 *.pt
 *.txt
 *.csv
+*.npy
 experiments/
 pretrained/
 log/

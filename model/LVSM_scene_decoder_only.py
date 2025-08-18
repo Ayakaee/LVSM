@@ -45,10 +45,15 @@ class Images2LatentScene(nn.Module):
         if self.num_registers == 0:
             self.register_tokens = None
         else:
-            self.register_tokens = nn.Parameter(
+            self.register_input = nn.Parameter(
                 torch.randn(1, self.num_registers, self.dim)
             )
-
+            self.register_input.requires_grad = True
+            self.register_output = nn.Parameter(
+                torch.randn(1, self.num_registers, self.dim)
+            )
+            self.register_output.requires_grad = True
+            
     def _init_repa(self):
         if 'dino' in self.config.model.image_tokenizer.type:
             z_dim = 768
@@ -584,11 +589,12 @@ class Images2LatentScene(nn.Module):
                     self.repa_label[repa_type][idx] = rearrange(x, "b d h w -> b (h w) d")
 
     
-    def pass_layers(self, input_tokens, target_tokens, registers, token_shape, gradient_checkpoint=False, checkpoint_every=1, attn_mask=None):
+    def pass_layers(self, input_tokens, target_tokens, registers, token_shape, gradient_checkpoint=False, checkpoint_every=1, attn_mask=None, extract_features=False):
         """
         concat_tokens: [B, n_input + n_target, D]
         input_patch: int, input tokens数量
         attn_mask: Optional attention mask for cross attention
+        extract_features: 是否提取每一层的特征用于可视化
         """
         # 获取token形状信息
         v_input, v_target, n_patches = token_shape
@@ -596,35 +602,51 @@ class Images2LatentScene(nn.Module):
         b = bv // v_input
         if self.num_registers > 0:
             input_tokens = torch.cat([registers, input_tokens], dim=1)
+            register_output = self.register_output.expand(b * v_target, -1, -1)
+            target_tokens = torch.cat([register_output, target_tokens], dim=1)
+        
+        # 用于存储每一层的特征
+        layer_features = {}
         
         if self.config.model.transformer.input_mode == 'encdec':
             for idx, block in enumerate(self.input_self_attn_blocks):
                 if self.config.model.transformer.input_scope == 'local':
                     input_tokens = input_tokens.view(b * v_input, n_patches, d)
                     input_tokens = block(input_tokens)
+                    if extract_features:
+                        layer_features[f'input_self_attn_{idx}'] = input_tokens.clone().detach()
                     input_tokens = input_tokens.view(b, v_input * n_patches, d)
                 elif self.config.model.transformer.input_scope == 'global':
                     input_tokens = block(input_tokens)
+                    if extract_features:
+                        layer_features[f'input_self_attn_{idx}'] = input_tokens.clone().detach()
                 else:
                     raise ValueError(f"Invalid input scope: {self.config.model.transformer.input_scope}")
-        # 24-layer Self-Attention
-        # Repeat input tokens for each target view
-
+        
         # 24-layer Cross-Attention
         if self.cross_attn_blocks is not None:
-            target_tokens = target_tokens.view(b, v_target * n_patches, d)
+            target_tokens = target_tokens.view(b, v_target * (n_patches + self.num_registers), d)
             for idx in range(len(self.cross_attn_blocks) // 2):
                 if self.config.model.transformer.input_mode == 'embed' or self.config.model.transformer.input_mode == 'ffn':
                     if self.config.model.transformer.input_scope == 'local':
                         input_tokens = input_tokens.view(b * v_input, n_patches + self.num_registers, d)
                         input_tokens = self.input_self_attn_blocks[idx](input_tokens)
+                        if extract_features:
+                            layer_features[f'input_self_attn_{idx}'] = input_tokens.clone().detach()
                         if self.config.training.enable_repa:
                             if idx + 1 in self.repa_x['input'].keys():
                                 self.repa_x['input'][idx + 1] = input_tokens[:, self.num_registers:, :]
                         input_tokens = input_tokens.view(b, v_input * (n_patches + self.num_registers), d)
+                
                 target_tokens = self.cross_attn_blocks[2*idx](input_tokens, target_tokens, attn_bias=attn_mask)
+                if extract_features:
+                    layer_features[f'cross_attn_{2*idx}'] = target_tokens.clone().detach()
+                
                 target_tokens = self.cross_attn_blocks[2*idx+1](input_tokens, target_tokens, attn_bias=attn_mask)
-            target_tokens = target_tokens.view(b * v_target, n_patches, d)
+                if extract_features:
+                    layer_features[f'cross_attn_{2*idx+1}'] = target_tokens.clone().detach()
+            
+            target_tokens = target_tokens.view(b * v_target, n_patches + self.num_registers, d)
         
         # Self-Cross
         if self.self_cross_blocks is not None:
@@ -633,21 +655,30 @@ class Images2LatentScene(nn.Module):
                     if self.config.model.transformer.input_scope == 'local':
                         input_tokens = input_tokens.view(b * v_input, n_patches + self.num_registers, d)
                         input_tokens = self.input_self_attn_blocks[idx](input_tokens)
+                        if extract_features:
+                            layer_features[f'input_self_attn_{idx}'] = input_tokens.clone().detach()
                         if self.config.training.enable_repa:
                             if idx + 1 in self.repa_x['input'].keys():
                                 self.repa_x['input'][idx + 1] = input_tokens[:, self.num_registers:, :]
                         input_tokens = input_tokens.view(b, v_input * (n_patches + self.num_registers), d)
                     elif self.config.model.transformer.input_scope == 'global':
                         input_tokens = self.input_self_attn_blocks[idx](input_tokens)
+                        if extract_features:
+                            layer_features[f'input_self_attn_{idx}'] = input_tokens.clone().detach()
                     else:
                         raise ValueError(f"Invalid input scope: {self.config.model.transformer.input_scope}")
                 
                 target_tokens = block(input_tokens, target_tokens, attn_bias=attn_mask)
+                if extract_features:
+                    layer_features[f'self_cross_{idx}'] = target_tokens.clone().detach()
                     
                 if self.config.training.enable_repa:
                     if idx + 1 in self.repa_x['target'].keys():
-                        self.repa_x['target'][idx + 1] = target_tokens
-        return target_tokens
+                        self.repa_x['target'][idx + 1] = target_tokens[:, self.num_registers:, :]
+        
+        if extract_features:
+            return target_tokens, layer_features
+        return target_tokens[:, self.num_registers:, :]
             
     # @torch._dynamo.assume_constant_result
     def get_posed_input(self, images=None, ray_o=None, ray_d=None, method="default_plucker"):
@@ -682,7 +713,7 @@ class Images2LatentScene(nn.Module):
             return torch.cat([images * 2.0 - 1.0, pose_cond], dim=2)
     
     
-    def forward(self, data_batch, input, target, has_target_image=True, detach=False, train=True):
+    def forward(self, data_batch, input, target, has_target_image=True, detach=False, train=True, extract_features=False):
 
         # Process input images
         if self.config.model.concat_rgb:
@@ -702,7 +733,7 @@ class Images2LatentScene(nn.Module):
         if self.num_registers == 0:
             registers = None
         else:
-            registers = self.register_tokens.expand(bv, -1, -1)
+            registers = self.register_input.expand(bv, -1, -1)
             rgbp_token = torch.cat([registers, rgbp_token], dim=1)
         if self.extra_enc is not None:
             for idx, block in enumerate(self.extra_enc):
@@ -710,6 +741,8 @@ class Images2LatentScene(nn.Module):
                 if self.config.training.enable_repa:
                     if idx + 101 in self.repa_x['input'].keys():
                         self.repa_x['input'][idx + 101] = rgbp_token[:, self.num_registers:, :]
+                if extract_features:
+                    layer_features[f'extra_enc_{idx}'] = rgbp_token.clone().detach()
         if self.num_registers > 0:
             registers = rgbp_token[:, :self.num_registers, :]
         rgbp_token = rgbp_token[:, self.num_registers:, :]
@@ -748,11 +781,18 @@ class Images2LatentScene(nn.Module):
                 view_max=self.config.training.view_max
             )
         
-        target_image_tokens = self.pass_layers(
-            input_img_tokens, target_pose_tokens, registers, token_shape, 
-            gradient_checkpoint=False, checkpoint_every=checkpoint_every, 
-            attn_mask=attn_mask
-        )
+        if extract_features:
+            target_image_tokens, layer_features = self.pass_layers(
+                input_img_tokens, target_pose_tokens, registers, token_shape, 
+                gradient_checkpoint=False, checkpoint_every=checkpoint_every, 
+                attn_mask=attn_mask, extract_features=True
+            )
+        else:
+            target_image_tokens = self.pass_layers(
+                input_img_tokens, target_pose_tokens, registers, token_shape, 
+                gradient_checkpoint=False, checkpoint_every=checkpoint_every, 
+                attn_mask=attn_mask, extract_features=False
+            )
 
         # [b * v_target, n_patches, d]
 
@@ -796,7 +836,8 @@ class Images2LatentScene(nn.Module):
             input=input,
             target=target,
             loss_metrics=loss_metrics,
-            render=rendered_images        
+            render=rendered_images,
+            layer_features=layer_features
             )
         
         return result
