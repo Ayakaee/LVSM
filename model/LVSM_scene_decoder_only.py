@@ -118,7 +118,7 @@ class Images2LatentScene(nn.Module):
                 nn.Linear(d_model, d_model),
                 nn.SiLU(),
                 QK_Norm_SelfAttentionBlock(
-                    d_model, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
+                    d_model, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_learnable_scale=use_learnable_scale
                 ),
                 nn.Linear(d_model, z_dim),
             )
@@ -277,13 +277,14 @@ class Images2LatentScene(nn.Module):
         config = self.config.model.transformer
         use_qk_norm = config.get("use_qk_norm", False)
         use_flex_attention = config.attention_arch == 'flex'
+        use_learnable_scale = config.get("use_learnable_scale", False)
 
         # Create transformer blocks
         if config.mode == 'self':
             self.logger.info(f'init transformer with self-attention only')
             self.self_attn_blocks = nn.ModuleList([
                 QK_Norm_SelfAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_learnable_scale=use_learnable_scale
                 ) for _ in range(config.n_layer)
             ])
             self.cross_attn_blocks = None
@@ -292,7 +293,7 @@ class Images2LatentScene(nn.Module):
             self.logger.info(f'init transformer with cross-attention only')
             self.cross_attn_blocks = nn.ModuleList([
                 QK_Norm_CrossAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_learnable_scale=use_learnable_scale
                 ) for _ in range(config.n_layer)
             ])
             self.self_attn_blocks = None
@@ -301,7 +302,7 @@ class Images2LatentScene(nn.Module):
             self.logger.info(f'init transformer with alternating self-cross attention')
             self.self_cross_blocks = nn.ModuleList([
                 QK_Norm_SelfCrossAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_learnable_scale=use_learnable_scale
                 ) for _ in range(config.n_layer // 2)
             ])
             self.self_attn_blocks = None
@@ -311,12 +312,12 @@ class Images2LatentScene(nn.Module):
             n_layer = config.n_layer // 2
             self.self_attn_blocks = nn.ModuleList([
                 QK_Norm_SelfAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_learnable_scale=use_learnable_scale
                 ) for _ in range(n_layer)
             ])
             self.cross_attn_blocks = nn.ModuleList([
                 QK_Norm_CrossAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_learnable_scale=use_learnable_scale
                 ) for _ in range(n_layer)
             ])
             self.self_cross_blocks = None
@@ -325,14 +326,14 @@ class Images2LatentScene(nn.Module):
             self.logger.info("use embed input self attention")
             self.input_self_attn_blocks = nn.ModuleList([
                 QK_Norm_SelfAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_learnable_scale=use_learnable_scale
                 ) for _ in range(config.n_layer // 2)
             ])
         elif self.config.model.transformer.input_mode == 'encdec':
             self.logger.info("use encdec input self attention")
             self.input_self_attn_blocks = nn.ModuleList([
                 QK_Norm_SelfAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_learnable_scale=use_learnable_scale
                 ) for _ in range(config.n_layer // 2)
             ])
         elif self.config.model.transformer.input_mode == 'ffn':
@@ -387,7 +388,7 @@ class Images2LatentScene(nn.Module):
         if self.config.model.extra_enc == 'attn':
             self.extra_enc = nn.ModuleList([
                 QK_Norm_SelfAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_learnable_scale=use_learnable_scale
                 ) for _ in range(self.config.model.enc_layer)
             ])
         else:

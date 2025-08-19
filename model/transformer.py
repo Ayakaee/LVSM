@@ -98,6 +98,7 @@ class QK_Norm_SelfAttention(nn.Module):
         fc_dropout=0.0,
         use_qk_norm=True,
         use_flex_attention=False,
+        use_learnable_scale=True,
     ):
         """
         Args:
@@ -108,6 +109,8 @@ class QK_Norm_SelfAttention(nn.Module):
             attn_dropout: Dropout probability for attention weights
             fc_dropout: Dropout probability for output projection
             use_qk_norm: Whether to use Q-K normalization
+            use_flex_attention: Whether to use flex attention
+            use_learnable_scale: Whether to use learnable scale factor for QK scores
         We use flash attention V2 for efficiency.
         """
         super().__init__()
@@ -119,6 +122,7 @@ class QK_Norm_SelfAttention(nn.Module):
         self.attn_dropout = attn_dropout
         self.use_qk_norm = use_qk_norm
         self.use_flex_attention = use_flex_attention
+        self.use_learnable_scale = use_learnable_scale
 
         self.to_qkv = nn.Linear(dim, 3 * dim, bias=qkv_bias)
         self.fc = nn.Linear(dim, dim, bias=fc_bias)
@@ -128,6 +132,12 @@ class QK_Norm_SelfAttention(nn.Module):
         if self.use_qk_norm:
             self.q_norm = RMSNorm(head_dim)
             self.k_norm = RMSNorm(head_dim)
+
+        # Learnable scale factor for QK scores (additional to the default head_dim scaling)
+        if self.use_learnable_scale:
+            self.scale = nn.Parameter(torch.ones(1))
+        else:
+            self.scale = 1.0
 
         if self.use_flex_attention:
             self.compiled_flex_attention = torch.compile(flex_attention, dynamic=False)
@@ -150,6 +160,10 @@ class QK_Norm_SelfAttention(nn.Module):
         if self.use_qk_norm:
             q = self.q_norm(q)
             k = self.k_norm(k)
+
+        # Apply learnable scale factor
+        q = q * self.scale
+        k = k * self.scale
 
         if self.use_flex_attention:
             q, k, v = (rearrange(t, "b s h d -> b h s d") for t in (q, k, v))
@@ -189,6 +203,7 @@ class QK_Norm_CrossAttention(nn.Module):
         fc_dropout=0.0,
         use_qk_norm=True,
         use_flex_attention=False,
+        use_learnable_scale=True,
     ):
         super().__init__()
         assert dim % head_dim == 0, f"Token dimension {dim} should be divisible by head dimension {head_dim}"
@@ -199,6 +214,7 @@ class QK_Norm_CrossAttention(nn.Module):
         self.attn_dropout = attn_dropout
         self.use_qk_norm = use_qk_norm
         self.use_flex_attention = use_flex_attention
+        self.use_learnable_scale = use_learnable_scale
 
         self.to_q = nn.Linear(dim, dim, bias=qkv_bias)
         self.to_kv = nn.Linear(dim, 2 * dim, bias=qkv_bias)
@@ -209,6 +225,12 @@ class QK_Norm_CrossAttention(nn.Module):
             self.q_norm = RMSNorm(head_dim)
             self.k_norm = RMSNorm(head_dim)
 
+        # Learnable scale factor for QK scores (additional to the default head_dim scaling)
+        if self.use_learnable_scale:
+            self.scale = nn.Parameter(torch.ones(1))
+        else:
+            self.scale = 1.0
+
         if self.use_flex_attention:
             self.compiled_flex_attention = torch.compile(flex_attention, dynamic=False)
 
@@ -217,7 +239,7 @@ class QK_Norm_CrossAttention(nn.Module):
         Args:
             q_input: (batch, n_target, dim)  # target tokens
             kv_input: (batch, n_input, dim)  # input tokens
-            attn_bias: 可选 attention bias
+            attn_bias: attention bias
             score_mod: Optional score modification function for flex attention
         Returns:
             (batch, n_target, dim)
@@ -233,6 +255,10 @@ class QK_Norm_CrossAttention(nn.Module):
         if self.use_qk_norm:
             q = self.q_norm(q)
             k = self.k_norm(k)
+
+        # Apply learnable scale factor
+        q = q * self.scale
+        k = k * self.scale
 
         # Cross Attention
         if self.use_flex_attention:
@@ -276,7 +302,8 @@ class QK_Norm_SelfAttentionBlock(nn.Module):
         mlp_bias=False,
         mlp_dropout=0.0,
         use_qk_norm=True,
-        use_flex_attention=False
+        use_flex_attention=False,
+        use_learnable_scale=True,
     ):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=ln_bias)
@@ -288,7 +315,8 @@ class QK_Norm_SelfAttentionBlock(nn.Module):
             attn_dropout=attn_dropout,
             fc_dropout=attn_fc_dropout,
             use_qk_norm=use_qk_norm,
-            use_flex_attention=use_flex_attention
+            use_flex_attention=use_flex_attention,
+            use_learnable_scale=use_learnable_scale,
         )
 
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=ln_bias)
@@ -321,7 +349,8 @@ class QK_Norm_CrossAttentionBlock(nn.Module):
         mlp_bias=False, 
         mlp_dropout=0.0, 
         use_qk_norm=True,
-        use_flex_attention=False
+        use_flex_attention=False,
+        use_learnable_scale=True,
     ):
         super().__init__()
         self.norm_q = nn.LayerNorm(dim, elementwise_affine=ln_bias)
@@ -334,7 +363,8 @@ class QK_Norm_CrossAttentionBlock(nn.Module):
             attn_dropout=attn_dropout,
             fc_dropout=attn_fc_dropout,
             use_qk_norm=use_qk_norm,
-            use_flex_attention=use_flex_attention
+            use_flex_attention=use_flex_attention,
+            use_learnable_scale=use_learnable_scale,
         )
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=ln_bias)
         self.mlp = MLP(
@@ -367,7 +397,8 @@ class QK_Norm_SelfCrossAttentionBlock(nn.Module):
         mlp_bias=False, 
         mlp_dropout=0.0, 
         use_qk_norm=True,
-        use_flex_attention=False
+        use_flex_attention=False,
+        use_learnable_scale=True,
     ):
         super().__init__()
         # Self-attention components
@@ -380,7 +411,8 @@ class QK_Norm_SelfCrossAttentionBlock(nn.Module):
             attn_dropout=attn_dropout,
             fc_dropout=attn_fc_dropout,
             use_qk_norm=use_qk_norm,
-            use_flex_attention=use_flex_attention
+            use_flex_attention=use_flex_attention,
+            use_learnable_scale=use_learnable_scale,
         )
         
         # Cross-attention components
@@ -394,7 +426,8 @@ class QK_Norm_SelfCrossAttentionBlock(nn.Module):
             attn_dropout=attn_dropout,
             fc_dropout=attn_fc_dropout,
             use_qk_norm=use_qk_norm,
-            use_flex_attention=use_flex_attention
+            use_flex_attention=use_flex_attention,
+            use_learnable_scale=use_learnable_scale,
         )
         
         # Shared FFN
