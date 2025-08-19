@@ -216,7 +216,6 @@ class LossComputer(nn.Module):
             + self.config.training.proj_loss_weight * proj_loss
         )
 
-
         loss_metrics = edict(
             loss=loss,
             l2_loss=l2_loss,

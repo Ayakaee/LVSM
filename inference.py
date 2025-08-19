@@ -11,12 +11,6 @@ from utils.metric_utils import export_results, summarize_evaluation
 import argparse
 import numpy as np
 
-# 添加命令行参数解析
-parser = argparse.ArgumentParser(description='LVSM模型推理')
-parser.add_argument('--extract_features', action='store_true', help='是否提取模型每一层的特征')
-parser.add_argument('--feature_save_dir', type=str, default='extracted_features', help='特征保存目录')
-args, _ = parser.parse_known_args()
-
 # Load config and read(override) arguments from CLI
 config = init_config()
 config.training.num_views = config.training.num_input_views + config.training.num_target_views
@@ -76,8 +70,6 @@ model.module.load_ckpt(model_path)
 
 if ddp_info.is_main_process:  
     print(f"Running inference; save results to: {config.inference.checkpoint_dir}")
-    if config.inference.extract_features:
-        print(f"特征提取已启用，特征将保存到: {config.inference.feature_save_dir}")
     # avoid multiple processes downloading LPIPS at the same time
     import lpips
     # Suppress the warning by setting weights_only=True
@@ -103,47 +95,17 @@ with torch.no_grad(), torch.autocast(
         batch = {k: v.to(ddp_info.device) if type(v) == torch.Tensor else v for k, v in batch.items()}
         input, target = model.module.process_data(batch, has_target_image=True, target_has_input = config.training.target_has_input, compute_rays=True)
         
-        # 根据是否启用特征提取来调用模型
-        if config.inference.extract_features:
-            result = model(batch, input, target, train=False, extract_features=True)
-            
-            # 保存特征到文件
-            if ddp_info.is_main_process and result.layer_features is not None:
-                for layer_name, features in result.layer_features.items():
-                    if features is not None:
-                        # 保存特征到numpy文件
-                        feature_path = os.path.join(config.inference.feature_save_dir, f'batch_{batch_idx:04d}_{layer_name}.npy')
-                        # 修复 BFloat16 类型问题：先转换为 float32，再转换为 numpy
-                        if features.dtype == torch.bfloat16:
-                            np_features = features.float().cpu().numpy()
-                        else:
-                            np_features = features.cpu().numpy()
-                        np.save(feature_path, np_features)
-                        print(f"保存特征 {layer_name} 到 {feature_path}, 形状: {np_features.shape}")
-        else:
-            result = model(batch, input, target, train=False)
+        result = model(batch, input, target, train=False)
             
         if config.inference.get("render_video", False):
             result= model.module.render_video(result, **config.inference.render_video_config)
         export_results(result, config.inference.checkpoint_dir, compute_metrics=config.inference.get("compute_metrics"))
-        
-        # 清理GPU内存
-        if config.inference.extract_features:
-            del result.layer_features
-        torch.cuda.empty_cache()
-        
-        if ddp_info.is_main_process:
-            print(f"处理批次 {batch_idx + 1} 完成")
-
 dist.barrier()
 
 if ddp_info.is_main_process and config.inference.get("compute_metrics", False):
     summarize_evaluation(config.inference.checkpoint_dir)
     if config.inference.get("generate_website", True):
         os.system(f"python generate_html.py {config.inference.checkpoint_dir}")
-
-if ddp_info.is_main_process and config.inference.extract_features:
-    print(f"特征提取完成！所有特征已保存到: {config.inference.feature_save_dir}")
 
 dist.barrier()
 dist.destroy_process_group()

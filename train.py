@@ -178,6 +178,9 @@ while cur_train_step <= total_train_steps and (datetime.now() - training_start_t
         input, target = model.module.process_data(batch, has_target_image=True, target_has_input = config.training.target_has_input, compute_rays=True)
         ret_dict = model(batch, input, target)
 
+    current_epoch = int(cur_train_step * total_batch_size // len(dataset))
+    if current_epoch > config.training.repa_stop_epoch:
+        model.module.loss_computer.config.training.proj_loss_weight = 0.0
     update_grads = (cur_train_step + 1) % grad_accum_steps == 0 or cur_train_step == total_train_steps
     if update_grads:
         with model.no_sync(): # no sync grads for efficiency

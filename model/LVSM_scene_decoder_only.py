@@ -730,6 +730,7 @@ class Images2LatentScene(nn.Module):
         # x = Linear([I; P]) (b, np, d)
         bv, n_patches, d = rgbp_token.size()  # [b*v, n_patches, d]
         # rgbp_token = rgbp_token.view(b, v_input * n_patches, d)  # [b, v*n_patches, d]
+        layer_features = {}
         if self.num_registers == 0:
             registers = None
         else:
@@ -782,17 +783,19 @@ class Images2LatentScene(nn.Module):
             )
         
         if extract_features:
-            target_image_tokens, layer_features = self.pass_layers(
+            target_image_tokens, layer_features_attn = self.pass_layers(
                 input_img_tokens, target_pose_tokens, registers, token_shape, 
                 gradient_checkpoint=False, checkpoint_every=checkpoint_every, 
                 attn_mask=attn_mask, extract_features=True
             )
+            layer_features.update(layer_features_attn)
         else:
             target_image_tokens = self.pass_layers(
                 input_img_tokens, target_pose_tokens, registers, token_shape, 
                 gradient_checkpoint=False, checkpoint_every=checkpoint_every, 
                 attn_mask=attn_mask, extract_features=False
             )
+            layer_features = None
 
         # [b * v_target, n_patches, d]
 

@@ -16,7 +16,7 @@ print(f"Total objects: {len(uids)}")
 #     )
 while(True):
     try:
-        for ids in range(36,51):
+        for ids in range(60,75):
             print(f'download id 000-0{ids}')
             objects = objaverse.load_objects(
                 uids=uids,

@@ -11,6 +11,7 @@ from utils.metric_utils import export_results, summarize_evaluation
 import argparse
 import numpy as np
 from get_attn_map import get_attention_weights_external, visualize_attention_weights
+from torchvision import transforms
 
 def visualize_attention_maps(model, images, layer_idx=-1):
     """
@@ -43,6 +44,14 @@ def create_attention_visualization(image, attention_map, model_name):
     
     return heatmap
 
+def save_image(image, name):
+    for batch_id, images in enumerate(image):
+        tensors = images.detach().cpu()
+        for idx, tensor in enumerate(tensors):
+            to_pil = transforms.ToPILImage()
+            pil_img = to_pil(tensor)
+            pil_img.save(f'feature_visualizations/{name}-batch{batch_id}-{idx}.png')
+    
 # 添加命令行参数解析
 parser = argparse.ArgumentParser(description='LVSM模型推理')
 parser.add_argument('--extract_features', action='store_true', help='是否提取模型每一层的特征')
@@ -95,8 +104,6 @@ dataloader_iter = iter(dataloader)
 
 dist.barrier()
 
-
-
 # Import model and load checkpoint
 model_path = config.inference.checkpoint_dir.replace("evaluation", "checkpoints")
 module, class_name = config.model.class_name.rsplit(".", 1)
@@ -104,15 +111,6 @@ LVSM = importlib.import_module(module).__dict__[class_name]
 model = LVSM(config, logger).to(ddp_info.device)
 model = DDP(model, device_ids=[ddp_info.local_rank])
 model.module.load_ckpt(model_path)
-
-attention_maps = []
-def hook_fn(module, input, output):
-    print('input', input[0].shape)
-    print('output', output.shape)
-    attention_maps.append(output[1])  # attention weights
-
-# 注册hook到指定层
-handle = model.module.input_self_attn_blocks[5].attn.register_forward_hook(hook_fn)
 
 if ddp_info.is_main_process:  
     print(f"Running inference; save results to: {config.inference.checkpoint_dir}")
@@ -127,23 +125,24 @@ if ddp_info.is_main_process:
 dist.barrier()
 
 
-datasampler.set_epoch(0)
+# datasampler.set_epoch(0)
 model.eval()
 
 # 如果启用特征提取，创建保存目录
 if config.inference.extract_features and ddp_info.is_main_process:
     os.makedirs(config.inference.feature_save_dir, exist_ok=True)
-
 with torch.no_grad(), torch.autocast(
     enabled=config.training.use_amp,
     device_type="cuda",
     dtype=amp_dtype_mapping[config.training.amp_dtype],
-):
+):  
     for batch_idx, batch in enumerate(dataloader):
         batch = {k: v.to(ddp_info.device) if type(v) == torch.Tensor else v for k, v in batch.items()}
         input, target = model.module.process_data(batch, has_target_image=True, target_has_input = config.training.target_has_input, compute_rays=True)
         
-        # 根据是否启用特征提取来调用模型
+        save_image(input.image, 'input')
+        save_image(target.image, 'target')
+        
         if config.inference.extract_features:
             result = model(batch, input, target, train=False, extract_features=True)
             
@@ -152,8 +151,9 @@ with torch.no_grad(), torch.autocast(
                 for layer_name, features in result.layer_features.items():
                     if features is not None:
                         # 保存特征到numpy文件
-                        feature_path = os.path.join(config.inference.feature_save_dir, f'batch_{batch_idx:04d}_{layer_name}.npy')
+                        feature_path = os.path.join(config.inference.feature_save_dir, f'{layer_name}.npy')
                         # 修复 BFloat16 类型问题：先转换为 float32，再转换为 numpy
+                        features = features.view(config.training.batch_size_per_gpu, -1, 1024, 768)
                         if features.dtype == torch.bfloat16:
                             np_features = features.float().cpu().numpy()
                         else:
@@ -166,7 +166,6 @@ with torch.no_grad(), torch.autocast(
         if config.inference.get("render_video", False):
             result= model.module.render_video(result, **config.inference.render_video_config)
         export_results(result, config.inference.checkpoint_dir, compute_metrics=config.inference.get("compute_metrics"))
-        
         # 清理GPU内存
         if config.inference.extract_features:
             del result.layer_features
@@ -175,10 +174,9 @@ with torch.no_grad(), torch.autocast(
         if ddp_info.is_main_process:
             print(f"处理批次 {batch_idx + 1} 完成")
         break
-
-print(attention_weights.shape)
+# print(attention_weights.shape)
 # 把attn weight保存到文件
-np.save('attn_weights.npy', attention_weights.cpu().numpy())
+# np.save('attn_weights.npy', attention_weights.cpu().numpy())
 
 # 可视化注意力图
 # visualize_attention_weights(attention_weights, 'input_self_attn_blocks[5].attn', 'attn_weights', save_heatmap=True, save_attention_pattern=True)

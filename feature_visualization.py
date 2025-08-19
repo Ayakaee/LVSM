@@ -9,7 +9,7 @@ import seaborn as sns
 from pathlib import Path
 import os
 
-def visualize_features_pca(feature_file, output_dir='feature_visualizations', layer_name=None):
+def visualize_features_pca(feature_file, output_dir='feature_visualizations', layer_name=None, batch_id=0, view=0):
     """
     使用PCA可视化特征
     
@@ -30,7 +30,8 @@ def visualize_features_pca(feature_file, output_dir='feature_visualizations', la
         layer_name = Path(feature_file).stem
     
     # 选择第一个样本进行可视化
-    x = features[0]  # 形状: (1024, 768)
+    x = features[batch_id][view]  # 形状: (1024, 768)
+    layer_name = f'{layer_name}-view{view}'
     print(f"选择的样本形状: {x.shape}")
     
     # 计算patch网格尺寸
@@ -162,7 +163,7 @@ def visualize_features_pca(feature_file, output_dir='feature_visualizations', la
     
     print(f"可视化完成！结果保存在: {output_dir}")
 
-def visualize_multiple_layers(feature_dir='extracted_features', output_dir='feature_visualizations'):
+def visualize_multiple_layers(feature_dir='extracted_features', output_dir='feature_visualizations', batch_id=0):
     """
     可视化多个层的特征
     
@@ -177,14 +178,19 @@ def visualize_multiple_layers(feature_dir='extracted_features', output_dir='feat
     for feature_file in feature_files:
         layer_name = feature_file.stem
         print(f"\n处理层: {layer_name}")
-        visualize_features_pca(str(feature_file), output_dir, layer_name)
+        if 'cross' in layer_name:
+            view = [0]
+        else:
+            view = [0]
+        for v in view:
+            visualize_features_pca(str(feature_file), output_dir, layer_name, batch_id=batch_id, view=v)
 
 if __name__ == "__main__":
     # 可视化单个层的特征
-    print("=== 可视化单个层特征 ===")
-    visualize_features_pca('extracted_features/batch_0000_input_self_attn_5.npy', 
-                          'feature_visualizations', 'input_self_attn_5')
+    # print("=== 可视化单个层特征 ===")
+    # visualize_features_pca('extracted_features/batch_0000_input_self_attn_5.npy', 
+    #                       'feature_visualizations', 'input_self_attn_5')
     
     # 可视化多个层的特征
     print("\n=== 可视化多个层特征 ===")
-    visualize_multiple_layers('extracted_features', 'feature_visualizations') 
+    visualize_multiple_layers('extracted_features', 'feature_visualizations', batch_id=3) 
