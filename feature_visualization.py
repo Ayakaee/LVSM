@@ -8,6 +8,7 @@ from sklearn.manifold import TSNE
 import seaborn as sns
 from pathlib import Path
 import os
+from compare_feature import FeatureVisualizationOrganizer
 
 def visualize_features_pca(feature_file, output_dir='feature_visualizations', layer_name=None, batch_id=0, view=0):
     """
@@ -179,9 +180,11 @@ def visualize_multiple_layers(feature_dir='extracted_features', output_dir='feat
         layer_name = feature_file.stem
         print(f"\n处理层: {layer_name}")
         if 'cross' in layer_name:
-            view = [0]
+            view = [0, 1, 2]
+        elif 'transformer_layer' in layer_name:
+            view = range(1, 9)
         else:
-            view = [0]
+            view = [0, 1]
         for v in view:
             visualize_features_pca(str(feature_file), output_dir, layer_name, batch_id=batch_id, view=v)
 
@@ -192,5 +195,13 @@ if __name__ == "__main__":
     #                       'feature_visualizations', 'input_self_attn_5')
     
     # 可视化多个层的特征
+    model_name = '8.1-baseline'
     print("\n=== 可视化多个层特征 ===")
-    visualize_multiple_layers('extracted_features', 'feature_visualizations', batch_id=3) 
+    visualize_multiple_layers(f'extracted_features/{model_name}', f'feature_visualizations/{model_name}', batch_id=3) 
+    
+    organizer = FeatureVisualizationOrganizer(
+        input_dir=f"feature_visualizations/{model_name}",
+        output_dir=f"feature_visualizations-o/{model_name}"
+    )
+    
+    organizer.run_all()

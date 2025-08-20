@@ -3,6 +3,8 @@ pretrained_models
 preprocessed_data
 experiments
 extracted_features/
+feature_visualizations-o/
+feature_visualizations/
 dataset/
 logs
 configs/

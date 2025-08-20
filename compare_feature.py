@@ -12,23 +12,27 @@ class FeatureVisualizationOrganizer:
         self.output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
     
-    def organize_layer_features(self):
+    def organize_layer_features(self, view):
         """将不同层的特征可视化放在一起"""
         
         # 定义需要组织的层类型和文件模式
         layer_patterns = {
-            'input_self_attn_intensity': r'input_self_attn_(\d+)-view0_intensity_heatmap\.png',
-            'input_self_attn_feature': r'input_self_attn_(\d+)-view0_feature_analysis\.png',
-            'input_self_attn_pca_all': r'input_self_attn_(\d+)-view0_pca_all_patches\.png',
-            'input_self_attn_pca_fg': r'input_self_attn_(\d+)-view0_pca_foreground\.png',
-            'self_cross_intensity': r'self_cross_(\d+)-view0_intensity_heatmap\.png',
-            'self_cross_feature': r'self_cross_(\d+)-view0_feature_analysis\.png',
-            'self_cross_pca_all': r'self_cross_(\d+)-view0_pca_all_patches\.png',
-            'self_cross_pca_fg': r'self_cross_(\d+)-view0_pca_foreground\.png',
-            'extra_enc_intensity': r'extra_enc_(\d+)-view0_intensity_heatmap\.png',
-            'extra_enc_feature': r'extra_enc_(\d+)-view0_feature_analysis\.png',
-            'extra_enc_pca_all': r'extra_enc_(\d+)-view0_pca_all_patches\.png',
-            'extra_enc_pca_fg': r'extra_enc_(\d+)-view0_pca_foreground\.png',
+            'input_self_attn_intensity': rf'input_self_attn_(\d+)-view{view}_intensity_heatmap\.png',
+            'input_self_attn_feature': rf'input_self_attn_(\d+)-view{view}_feature_analysis\.png',
+            'input_self_attn_pca_all': rf'input_self_attn_(\d+)-view{view}_pca_all_patches\.png',
+            'input_self_attn_pca_fg': rf'input_self_attn_(\d+)-view{view}_pca_foreground\.png',
+            'self_cross_intensity': rf'self_cross_(\d+)-view{view}_intensity_heatmap\.png',
+            'self_cross_feature': rf'self_cross_(\d+)-view{view}_feature_analysis\.png',
+            'self_cross_pca_all': rf'self_cross_(\d+)-view{view}_pca_all_patches\.png',
+            'self_cross_pca_fg': rf'self_cross_(\d+)-view{view}_pca_foreground\.png',
+            'extra_enc_intensity': rf'extra_enc_(\d+)-view{view}_intensity_heatmap\.png',
+            'extra_enc_feature': rf'extra_enc_(\d+)-view{view}_feature_analysis\.png',
+            'extra_enc_pca_all': rf'extra_enc_(\d+)-view{view}_pca_all_patches\.png',
+            'extra_enc_pca_fg': rf'extra_enc_(\d+)-view{view}_pca_foreground\.png',
+            'transformer_layer_intensity': rf'transformer_layer_(\d+)-view{view}_intensity_heatmap\.png',
+            'transformer_layer_feature': rf'transformer_layer_(\d+)-view{view}_feature_analysis\.png',
+            'transformer_layer_pca_all': rf'transformer_layer_(\d+)-view{view}_pca_all_patches\.png',
+            'transformer_layer_pca_fg': rf'transformer_layer_(\d+)-view{view}_pca_foreground\.png',
         }
         
         # 获取所有文件
@@ -52,7 +56,7 @@ class FeatureVisualizationOrganizer:
             matched_files.sort(key=lambda x: x[0])
             
             # 创建组合图像
-            self._create_layer_comparison(matched_files, layer_type)
+            self._create_layer_comparison(matched_files, layer_type, view=view)
     
     def organize_batch_views(self):
         """将同一batch不同视角的input和target放在一起"""
@@ -82,7 +86,7 @@ class FeatureVisualizationOrganizer:
             print(f"Processing batch {batch_num}...")
             self._create_batch_comparison(batch_data[batch_num], batch_num)
     
-    def _create_layer_comparison(self, matched_files, layer_type):
+    def _create_layer_comparison(self, matched_files, layer_type, view):
         """创建层对比图像"""
         if not matched_files:
             return
@@ -93,7 +97,7 @@ class FeatureVisualizationOrganizer:
         elif n_layers % 2 == 0:
             w, h = n_layers // 2, 2
         else:
-            w, h = n_layers // 2, n_layers // 2 + 1
+            w, h = n_layers // 2 + 1, 2
         fig_width = min(20, 4 * w)
         fig_height = 5 * h
         
@@ -120,7 +124,7 @@ class FeatureVisualizationOrganizer:
         
         # 调整布局并保存
         plt.tight_layout()
-        output_path = os.path.join(self.output_dir, f'{layer_type}_comparison.png')
+        output_path = os.path.join(self.output_dir, f'{layer_type}-view{view}_comparison.png')
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
         plt.close()
         print(f"Saved: {output_path}")
@@ -250,7 +254,8 @@ class FeatureVisualizationOrganizer:
         
         # 组织层特征
         print("\n1. Organizing layer features...")
-        self.organize_layer_features()
+        for view in range(0,9):
+            self.organize_layer_features(view=view)
         
         # 组织批次视图
         print("\n2. Organizing batch views...")
@@ -265,8 +270,8 @@ class FeatureVisualizationOrganizer:
 if __name__ == "__main__":
     # 使用示例
     organizer = FeatureVisualizationOrganizer(
-        input_dir="feature_visualizations",
-        output_dir="feature_visualizations-o"
+        input_dir="feature_visualizations/8.1-baseline",
+        output_dir="feature_visualizations-o/8.1-baseline"
     )
     
     organizer.run_all()

@@ -44,25 +44,27 @@ def create_attention_visualization(image, attention_map, model_name):
     
     return heatmap
 
-def save_image(image, name):
-    for batch_id, images in enumerate(image):
-        tensors = images.detach().cpu()
-        for idx, tensor in enumerate(tensors):
-            to_pil = transforms.ToPILImage()
-            pil_img = to_pil(tensor)
-            pil_img.save(f'feature_visualizations/{name}-batch{batch_id}-{idx}.png')
-    
+
 # 添加命令行参数解析
 parser = argparse.ArgumentParser(description='LVSM模型推理')
 parser.add_argument('--extract_features', action='store_true', help='是否提取模型每一层的特征')
 parser.add_argument('--feature_save_dir', type=str, default='extracted_features', help='特征保存目录')
 args, _ = parser.parse_known_args()
 
+def save_image(image, name, path):
+    for batch_id, images in enumerate(image):
+        tensors = images.detach().cpu()
+        for idx, tensor in enumerate(tensors):
+            to_pil = transforms.ToPILImage()
+            pil_img = to_pil(tensor)
+            pil_img.save(os.path.join(path, f'{name}-batch{batch_id}-{idx}.png'))
+    
 # Load config and read(override) arguments from CLI
 config = init_config()
 config.training.num_views = config.training.num_input_views + config.training.num_target_views
 log_file = config.training.get("log_file", f'logs/{config.inference.checkpoint_dir.split("/")[-1]}_eval.log')
 logger = init_logging(log_file)
+config.inference.feature_save_dir = os.path.join(config.inference.feature_save_dir, config.inference.checkpoint_dir.split('/')[2])
 
 os.environ["OMP_NUM_THREADS"] = str(config.training.get("num_threads", 1))
 
@@ -140,8 +142,8 @@ with torch.no_grad(), torch.autocast(
         batch = {k: v.to(ddp_info.device) if type(v) == torch.Tensor else v for k, v in batch.items()}
         input, target = model.module.process_data(batch, has_target_image=True, target_has_input = config.training.target_has_input, compute_rays=True)
         
-        save_image(input.image, 'input')
-        save_image(target.image, 'target')
+        save_image(input.image, 'input', config.inference.feature_save_dir)
+        save_image(target.image, 'target', config.inference.feature_save_dir)
         
         if config.inference.extract_features:
             result = model(batch, input, target, train=False, extract_features=True)
