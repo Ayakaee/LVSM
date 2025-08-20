@@ -126,14 +126,37 @@ class ProcessData(nn.Module):
             ], dtype=torch.long, device=data_batch["image"].device)
             index = torch.sort(index, dim=1).values # [b, num_target_views]
 
+        # 创建输入视角的随机打乱索引
+        input_shuffle_indices = None
+        if (self.config.training.get("shuffle_input_views", False) 
+            and (not self.config.inference.get("if_inference", False))):
+            # 为每个batch创建随机打乱的索引
+            input_shuffle_indices = torch.tensor([
+                random.sample(range(self.config.training.num_input_views), self.config.training.num_input_views)
+                for _ in range(bs)
+            ], dtype=torch.long, device=data_batch["image"].device) # [b, num_input_views]
 
         for key, value in data_batch.items():
             if key == "scene_name":
                 input_dict[key] = value
                 target_dict[key] = value
                 continue
-            input_dict[key] = value[:, :self.config.training.num_input_views, ...]
+            
+            # 处理输入数据
+            input_data = value[:, :self.config.training.num_input_views, ...]
+            
+            # 如果启用了输入视角打乱，则应用打乱
+            if input_shuffle_indices is not None:
+                to_expand_dim = input_data.shape[2:]  # [b, v, (value dim)] -> [value dim]
+                expanded_shuffle_indices = input_shuffle_indices.view(
+                    input_shuffle_indices.shape[0], input_shuffle_indices.shape[1], 
+                    *(1,) * len(to_expand_dim)
+                ).expand(-1, -1, *to_expand_dim)
+                input_dict[key] = torch.gather(input_data, dim=1, index=expanded_shuffle_indices)
+            else:
+                input_dict[key] = input_data
 
+            # 处理目标数据
             to_expand_dim = value.shape[2:] # [b, v, (value dim)] -> [value dim], e.g. [c, h, w] or [4] or [4, 4]
             expanded_index = index.view(index.shape[0], index.shape[1], *(1,) * len(to_expand_dim)).expand(-1, -1, *to_expand_dim)
 

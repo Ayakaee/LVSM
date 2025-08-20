@@ -40,3 +40,16 @@ repa的projector换成attention
 
 Target view数量对训练有影响，epoch变少，循环变慢，可能让训练变慢
 测一下input的泛化性，还有可变input的训练效果
+
+
+self:layer0-3语义，整体norm大小无明显变化150
+layer4-5在norm在几个点上非常非常大1600，这些点似乎呈网格状分布
+
+cross:layer0呈现网格状，似乎只看plucker和语义无关
+cross:layer1 norm集中在input view的边缘
+cross:layer2 norm集中在target view的边缘
+cross:layer3-5都比上一层norm增大60左右
+layer3开始有轮廓
+
+没有exenc的情况下，self layer0 有一些网格状， norm尖峰在Self-layer5出现
+cross layer0网格更多，layer5的norm更大350， layer4开始有轮廓
