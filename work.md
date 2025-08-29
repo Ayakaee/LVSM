@@ -53,3 +53,31 @@ layer3开始有轮廓
 
 没有exenc的情况下，self layer0 有一些网格状， norm尖峰在Self-layer5出现
 cross layer0网格更多，layer5的norm更大350， layer4开始有轮廓
+
+lvsm没有norm尖峰
+
+repa enc和self-attn的norm高斯分布，但是pca特征是正确的，确实学到了dino，cos和mse都很好
+cross蒸馏output太靠前，学不到，这一层之后重新开始，网格持续到layer2（正常layer1）
+
+none;embed 模型的self-attn有pca横着的条纹，而repa的没有，疑似plucker?但是在none;exenc=2的模型中就弱很多，layer3就看不到了
+
+repa蒸馏input之后，self-attn的语义特征更细腻
+
+提出了一种双向transformer架构，在decoder的每一层同步更新input token，让输入图片解耦，对输入输出数量鲁棒，高效训练和推理的模型
+
+abstract:简单讲，八股，
+introduction:：
+- 研讨，问题是什么，最近很火，
+- 已有方法有问题，引用，（给出一个可视化图或者表）
+- 获得启发，提出xxx改进。实验跑了啥，贡献是什么
+
+- related work
+- 阐述问题定义，（我们的更应用化）定义好符号，说明全局的setting，输入输出分别是什么，任务是什么
+- 为了解决xxx，可能的架构（大的范式而不是小区别），哪个是最好的
+- 实验
+
+https://www.overleaf.com/1248324414kgtznzspdqmf#fee15c
+https://www.overleaf.com/8873597924gjvmswvdpqwn#a1de62 去年的写作
+https://www.overleaf.com/7526643262ghrwsnkmwdjp#8ec810
+https://www.overleaf.com/7334783184qthtnrfpxzsq#912dc3
+https://www.overleaf.com/read/hgcbjhsjmxjb#87f2cf

@@ -1,3 +1,10 @@
-with open('data/test/full_list.txt', 'r') as f:
-    all_scene_paths = f.read().splitlines()
-print(len(all_scene_paths))
+import torch
+
+a = torch.randn(1, 2)
+b = a
+c = a * 2
+
+print(a)
+print(b)
+print(c)
+

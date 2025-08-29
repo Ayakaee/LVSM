@@ -98,7 +98,6 @@ class QK_Norm_SelfAttention(nn.Module):
         fc_dropout=0.0,
         use_qk_norm=True,
         use_flex_attention=False,
-        use_learnable_scale=True,
     ):
         """
         Args:
@@ -122,7 +121,6 @@ class QK_Norm_SelfAttention(nn.Module):
         self.attn_dropout = attn_dropout
         self.use_qk_norm = use_qk_norm
         self.use_flex_attention = use_flex_attention
-        self.use_learnable_scale = use_learnable_scale
 
         self.to_qkv = nn.Linear(dim, 3 * dim, bias=qkv_bias)
         self.fc = nn.Linear(dim, dim, bias=fc_bias)
@@ -132,12 +130,6 @@ class QK_Norm_SelfAttention(nn.Module):
         if self.use_qk_norm:
             self.q_norm = RMSNorm(head_dim)
             self.k_norm = RMSNorm(head_dim)
-
-        # Learnable scale factor for QK scores (additional to the default head_dim scaling)
-        if self.use_learnable_scale:
-            self.scale = nn.Parameter(torch.ones(1))
-        else:
-            self.scale = 1.0
 
         if self.use_flex_attention:
             self.compiled_flex_attention = torch.compile(flex_attention, dynamic=False)
@@ -160,10 +152,6 @@ class QK_Norm_SelfAttention(nn.Module):
         if self.use_qk_norm:
             q = self.q_norm(q)
             k = self.k_norm(k)
-
-        # Apply learnable scale factor
-        q = q * self.scale
-        k = k * self.scale
 
         if self.use_flex_attention:
             q, k, v = (rearrange(t, "b s h d -> b h s d") for t in (q, k, v))
@@ -203,7 +191,7 @@ class QK_Norm_CrossAttention(nn.Module):
         fc_dropout=0.0,
         use_qk_norm=True,
         use_flex_attention=False,
-        use_learnable_scale=True,
+        use_log_scale=False,
     ):
         super().__init__()
         assert dim % head_dim == 0, f"Token dimension {dim} should be divisible by head dimension {head_dim}"
@@ -214,7 +202,7 @@ class QK_Norm_CrossAttention(nn.Module):
         self.attn_dropout = attn_dropout
         self.use_qk_norm = use_qk_norm
         self.use_flex_attention = use_flex_attention
-        self.use_learnable_scale = use_learnable_scale
+        self.use_log_scale = use_log_scale
 
         self.to_q = nn.Linear(dim, dim, bias=qkv_bias)
         self.to_kv = nn.Linear(dim, 2 * dim, bias=qkv_bias)
@@ -226,15 +214,11 @@ class QK_Norm_CrossAttention(nn.Module):
             self.k_norm = RMSNorm(head_dim)
 
         # Learnable scale factor for QK scores (additional to the default head_dim scaling)
-        if self.use_learnable_scale:
-            self.scale = nn.Parameter(torch.ones(1))
-        else:
-            self.scale = 1.0
 
         if self.use_flex_attention:
             self.compiled_flex_attention = torch.compile(flex_attention, dynamic=False)
 
-    def forward(self, q_input, kv_input, attn_bias=None, score_mod=None):
+    def forward(self, q_input, kv_input, v_input=None, attn_bias=None, score_mod=None):
         """
         Args:
             q_input: (batch, n_target, dim)  # target tokens
@@ -257,8 +241,11 @@ class QK_Norm_CrossAttention(nn.Module):
             k = self.k_norm(k)
 
         # Apply learnable scale factor
-        q = q * self.scale
-        k = k * self.scale
+        if self.use_log_scale:
+            log_views = torch.log(torch.clamp(torch.tensor(v_input, dtype=torch.bfloat16), min=2))
+            scale = log_views - math.log(4) + 1
+            q = q * scale
+            k = k * scale
 
         # Cross Attention
         if self.use_flex_attention:
@@ -303,7 +290,7 @@ class QK_Norm_SelfAttentionBlock(nn.Module):
         mlp_dropout=0.0,
         use_qk_norm=True,
         use_flex_attention=False,
-        use_learnable_scale=True,
+        use_log_scale=False,
     ):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=ln_bias)
@@ -316,7 +303,6 @@ class QK_Norm_SelfAttentionBlock(nn.Module):
             fc_dropout=attn_fc_dropout,
             use_qk_norm=use_qk_norm,
             use_flex_attention=use_flex_attention,
-            use_learnable_scale=use_learnable_scale,
         )
 
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=ln_bias)
@@ -364,7 +350,7 @@ class QK_Norm_CrossAttentionBlock(nn.Module):
             fc_dropout=attn_fc_dropout,
             use_qk_norm=use_qk_norm,
             use_flex_attention=use_flex_attention,
-            use_learnable_scale=use_learnable_scale,
+            use_log_scale=use_log_scale,
         )
         self.norm2 = nn.LayerNorm(dim, elementwise_affine=ln_bias)
         self.mlp = MLP(
@@ -398,7 +384,7 @@ class QK_Norm_SelfCrossAttentionBlock(nn.Module):
         mlp_dropout=0.0, 
         use_qk_norm=True,
         use_flex_attention=False,
-        use_learnable_scale=True,
+        use_log_scale=False,
     ):
         super().__init__()
         # Self-attention components
@@ -411,8 +397,7 @@ class QK_Norm_SelfCrossAttentionBlock(nn.Module):
             attn_dropout=attn_dropout,
             fc_dropout=attn_fc_dropout,
             use_qk_norm=use_qk_norm,
-            use_flex_attention=use_flex_attention,
-            use_learnable_scale=use_learnable_scale,
+            use_flex_attention=use_flex_attention
         )
         
         # Cross-attention components
@@ -427,7 +412,7 @@ class QK_Norm_SelfCrossAttentionBlock(nn.Module):
             fc_dropout=attn_fc_dropout,
             use_qk_norm=use_qk_norm,
             use_flex_attention=use_flex_attention,
-            use_learnable_scale=use_learnable_scale,
+            use_log_scale=use_log_scale,
         )
         
         # Shared FFN
@@ -447,11 +432,11 @@ class QK_Norm_SelfCrossAttentionBlock(nn.Module):
             attn_bias: Optional attention bias mask for cross-attention
         """
         target = target + self.self_attn(self.norm1(target))
-        bs = input.shape[0]
+        bs, seq_in, _ = input.shape
         bs_out, seq, dim = target.shape
         target = target.view(bs, seq * bs_out // bs, dim)
 
-        target = target + self.cross_attn(self.norm_q(target), self.norm_kv(input), attn_bias=attn_bias)
+        target = target + self.cross_attn(self.norm_q(target), self.norm_kv(input), v_input=seq_in // seq, attn_bias=attn_bias)
         target = target + self.mlp(self.norm2(target))
 
         target = target.view(bs_out, seq, dim)

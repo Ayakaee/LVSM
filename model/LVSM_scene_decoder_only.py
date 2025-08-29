@@ -240,7 +240,7 @@ class Images2LatentScene(nn.Module):
                 for param in self.image_encoder.parameters():
                     param.requires_grad = False
                 self.image_encoder.eval()
-            if not self.config.training.enable_repa:
+            if not self.config.training.enable_repa or self.config.model.repa_concat:
                 d_model = self.config.model.transformer.d
                 projector = nn.Sequential(
                     nn.Linear(
@@ -277,7 +277,7 @@ class Images2LatentScene(nn.Module):
         config = self.config.model.transformer
         use_qk_norm = config.get("use_qk_norm", False)
         use_flex_attention = config.attention_arch == 'flex'
-        use_learnable_scale = config.get("use_learnable_scale", False)
+        use_log_scale = config.get("use_log_scale", False)
 
         # Create transformer blocks
         if config.mode == 'self':
@@ -293,7 +293,7 @@ class Images2LatentScene(nn.Module):
             self.logger.info(f'init transformer with cross-attention only')
             self.cross_attn_blocks = nn.ModuleList([
                 QK_Norm_CrossAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_learnable_scale=use_learnable_scale
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_log_scale=use_log_scale
                 ) for _ in range(config.n_layer)
             ])
             self.self_attn_blocks = None
@@ -302,7 +302,7 @@ class Images2LatentScene(nn.Module):
             self.logger.info(f'init transformer with alternating self-cross attention')
             self.self_cross_blocks = nn.ModuleList([
                 QK_Norm_SelfCrossAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_learnable_scale=use_learnable_scale
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_log_scale=use_log_scale
                 ) for _ in range(config.n_layer // 2)
             ])
             self.self_attn_blocks = None
@@ -312,12 +312,12 @@ class Images2LatentScene(nn.Module):
             n_layer = config.n_layer // 2
             self.self_attn_blocks = nn.ModuleList([
                 QK_Norm_SelfAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_learnable_scale=use_learnable_scale
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_log_scale=use_log_scale
                 ) for _ in range(n_layer)
             ])
             self.cross_attn_blocks = nn.ModuleList([
                 QK_Norm_CrossAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_learnable_scale=use_learnable_scale
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_log_scale=use_log_scale
                 ) for _ in range(n_layer)
             ])
             self.self_cross_blocks = None
@@ -326,14 +326,14 @@ class Images2LatentScene(nn.Module):
             self.logger.info("use embed input self attention")
             self.input_self_attn_blocks = nn.ModuleList([
                 QK_Norm_SelfAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_learnable_scale=use_learnable_scale
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_log_scale=use_log_scale
                 ) for _ in range(config.n_layer // 2)
             ])
         elif self.config.model.transformer.input_mode == 'encdec':
             self.logger.info("use encdec input self attention")
             self.input_self_attn_blocks = nn.ModuleList([
                 QK_Norm_SelfAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_learnable_scale=use_learnable_scale
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_log_scale=use_log_scale
                 ) for _ in range(config.n_layer // 2)
             ])
         elif self.config.model.transformer.input_mode == 'ffn':
@@ -388,7 +388,7 @@ class Images2LatentScene(nn.Module):
         if self.config.model.extra_enc == 'attn':
             self.extra_enc = nn.ModuleList([
                 QK_Norm_SelfAttentionBlock(
-                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_learnable_scale=use_learnable_scale
+                    config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention
                 ) for _ in range(self.config.model.enc_layer)
             ])
         else:
@@ -732,12 +732,15 @@ class Images2LatentScene(nn.Module):
         bv, n_patches, d = rgbp_token.size()  # [b*v, n_patches, d]
         # rgbp_token = rgbp_token.view(b, v_input * n_patches, d)  # [b, v*n_patches, d]
         layer_features = {}
+        if self.config.model.repa_concat:
+            ori_rgbp_token = rgbp_token
         if self.num_registers == 0:
             registers = None
         else:
             registers = self.register_input.expand(bv, -1, -1)
             rgbp_token = torch.cat([registers, rgbp_token], dim=1)
         if self.extra_enc is not None:
+            
             for idx, block in enumerate(self.extra_enc):
                 rgbp_token = block(rgbp_token)
                 if self.config.training.enable_repa:
@@ -748,6 +751,12 @@ class Images2LatentScene(nn.Module):
         if self.num_registers > 0:
             registers = rgbp_token[:, :self.num_registers, :]
         rgbp_token = rgbp_token[:, self.num_registers:, :]
+        if self.config.model.repa_concat:
+            input_img_features = self.get_image_feature(input.image) # Linear(encoder(I)) (b, np, d)
+            input_img_features = input_img_features.reshape(b * v_input, n_patches, -1)  # [b*v, n_patches, d]
+            input_repa_tokens = torch.cat((input_img_features, ori_rgbp_token), dim=2)  # [b*v, n_patches, d*2]
+            input_repa_tokens = self.align_projector(input_repa_tokens) # [b*v, n_patches, d]
+            print('input_repa_tokens', input_repa_tokens.shape)
         if self.image_encoder is not None and not self.config.training.enable_repa:
             input_img_features = self.get_image_feature(input.image) # Linear(encoder(I)) (b, np, d)
             input_img_features = input_img_features.reshape(b * v_input, n_patches, -1)  # [b*v, n_patches, d]
@@ -755,7 +764,10 @@ class Images2LatentScene(nn.Module):
             input_img_tokens = self.align_projector(input_img_tokens) # [b*v, n_patches, d]
             # Linear([F;Linear([P;I])]) (b, np, d1+d2) # TODO 图片内self
         elif self.image_encoder is not None and self.config.training.enable_repa:
-            input_img_tokens = rgbp_token
+            if not self.config.model.repa_concat:
+                input_img_tokens = rgbp_token
+            else:
+                input_img_tokens = input_repa_tokens
             self.get_repa_feature(input.image, 'input')
             self.get_repa_feature(target.image, 'target')
         else:
