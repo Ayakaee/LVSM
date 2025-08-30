@@ -99,12 +99,21 @@ class Images2LatentScene(nn.Module):
         config = self.config.model.transformer
         use_qk_norm = config.get("use_qk_norm", False)
         use_flex_attention = config.attention_arch == 'flex'
-        if type == 'linear2':    
-            projector = nn.Sequential(
-                nn.Linear(d_model, dim),
+        if self.config.model.distill_half:
+            d_model = d_model // 2
+        if type == 'linear2':
+            if self.config.model.label2x:
+                projector = nn.Sequential(
+                nn.Linear(z_dim, dim),
                 nn.SiLU(),
-                nn.Linear(dim, z_dim),
+                nn.Linear(dim, d_model),
             )
+            else:
+                projector = nn.Sequential(
+                    nn.Linear(d_model, dim),
+                    nn.SiLU(),
+                    nn.Linear(dim, z_dim),
+                )
         elif type == 'linear3':
             projector = nn.Sequential(
                 nn.Linear(d_model, dim),

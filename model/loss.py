@@ -16,6 +16,24 @@ def mean_flat(x):
     """
     return torch.mean(x, dim=list(range(1, len(x.size()))))
 
+def calculate_proj_loss(x_j, label_j, loss_type):
+    if loss_type == 'cos':
+        # Cosine loss (original implementation)
+        label_j = torch.nn.functional.normalize(label_j, dim=-1) 
+        x_j = torch.nn.functional.normalize(x_j, dim=-1) 
+        return mean_flat(-(x_j * label_j).sum(dim=-1))
+    elif loss_type == 'l2':
+        # L2 loss
+        return mean_flat(F.mse_loss(x_j, label_j, reduction='none').sum(dim=-1))
+    elif loss_type == 'sl1':
+        # Smooth L1 loss
+        return mean_flat(F.smooth_l1_loss(x_j, label_j, reduction='none').sum(dim=-1))
+    else:
+        # Default to cosine loss
+        label_j = torch.nn.functional.normalize(label_j, dim=-1) 
+        x_j = torch.nn.functional.normalize(x_j, dim=-1) 
+        return mean_flat(-(x_j * label_j).sum(dim=-1))
+
 # the perception loss code is modified from https://github.com/zhengqili/Crowdsampling-the-Plenoptic-Function/blob/f5216f312cf82d77f8d20454b5eeb3930324630a/models/networks.py#L1478
 # and some parts are based on https://github.com/arthurhero/Long-LRM/blob/main/model/loss.py
 class PerceptualLoss(nn.Module):
@@ -193,18 +211,22 @@ class LossComputer(nn.Module):
         
         # projection loss
         proj_loss = torch.tensor(0.0).to(l2_loss.device)
+        d_model = self.config.model.transformer.d
         cnt = 0
         if train and enable_repa:
             for repa_type in ['input', 'target']:
                 for key, value in repa_config[repa_type].items():
                     label = repa_label[repa_type][key]
                     for idx in value:
-                        label = repa_projector[repa_type][str(key)][str(idx)](label)
                         x = repa_x[repa_type][idx]
+                        if self.config.model.distill_half:
+                            x = x[:, :, :d_model//2]
+                        if self.config.model.label2x:
+                            label = repa_projector[repa_type][str(key)][str(idx)](label)
+                        else:
+                            x = repa_projector[repa_type][str(key)][str(idx)](x)
                         for (x_j, label_j) in zip(x, label):
-                            label_j = torch.nn.functional.normalize(label_j, dim=-1) 
-                            x_j = torch.nn.functional.normalize(x_j, dim=-1) 
-                            proj_loss += mean_flat(-(x_j * label_j).sum(dim=-1))
+                            proj_loss += calculate_proj_loss(x_j, label_j, self.config.training.proj_loss_type)
                         cnt += x.shape[0]
             proj_loss /= cnt
 
