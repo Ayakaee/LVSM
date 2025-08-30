@@ -171,7 +171,7 @@ def init_file_logging(log_file):
 def local_backup_src_code(
     src_dir,
     dst_dir,
-    max_size_MB=4.0,
+    max_size_MB=40.0,
     extension_to_backup=(".py", ".yaml", ".sh", ".bash", ".json"),
     exclude_dirs=("wandb", ".git", "checkpoints", "experiments", "dinov3","dinov2","perception_models", "LGM", "objaverse-xl"),
     verbose=True,

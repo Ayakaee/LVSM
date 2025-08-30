@@ -126,7 +126,7 @@ def _download_object(
     return uid, local_path
 
 
-def load_objects(uids: List[str], start_idx:str, end_idx: str, download_processes: int = 1) -> Dict[str, str]:
+def load_objects(uids: List[str], start_idx:str, end_idx: str, download_processes: int = 1, path: str = '') -> Dict[str, str]:
     """Return the path to the object files for the given uids.
 
     If the object is not already downloaded, it will be downloaded.
@@ -139,8 +139,11 @@ def load_objects(uids: List[str], start_idx:str, end_idx: str, download_processe
         A dictionary mapping the object uid to the local path of where the object
         downloaded.
     """
+    global _VERSIONED_PATH
     object_paths = _load_object_paths()
     out = {}
+    if path != '':
+        _VERSIONED_PATH = path
     if download_processes == 1:
         uids_to_download = []
         for uid in uids:

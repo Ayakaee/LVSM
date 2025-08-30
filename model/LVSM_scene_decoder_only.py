@@ -230,27 +230,30 @@ class Images2LatentScene(nn.Module):
             self.image_encoder = None
         else:
             raise NotImplementedError('unknown enocder type')
-
-        if self.image_encoder is None:
-            self.align_projector = None
+        if self.config.model.repa_concat:
+            encoder_dim = 768
+            
+        if self.config.model.repa_concat or (self.image_encoder is not None and not self.config.training.enable_repa):
+            d_model = self.config.model.transformer.d
+            projector = nn.Sequential(
+                nn.Linear(
+                    d_model + encoder_dim,
+                    d_model,
+                        bias=False,
+                    ),
+                )
+            projector.apply(init_weights)
+            self.align_projector = projector 
         else:
+            self.align_projector = None
+            
+        if self.image_encoder is not None:
             freeze_encoder = self.config.model.get("freeze_image_encoder", True)
             if freeze_encoder:
                 self.logger.info('freeze parameters when loading image encoder')
                 for param in self.image_encoder.parameters():
                     param.requires_grad = False
                 self.image_encoder.eval()
-            if not self.config.training.enable_repa or self.config.model.repa_concat:
-                d_model = self.config.model.transformer.d
-                projector = nn.Sequential(
-                    nn.Linear(
-                        d_model + encoder_dim,
-                        d_model,
-                            bias=False,
-                        ),
-                    )
-                projector.apply(init_weights)
-                self.align_projector = projector
         
         # Target pose tokenizer
         self.target_pose_tokenizer = self._create_tokenizer(
@@ -740,7 +743,6 @@ class Images2LatentScene(nn.Module):
             registers = self.register_input.expand(bv, -1, -1)
             rgbp_token = torch.cat([registers, rgbp_token], dim=1)
         if self.extra_enc is not None:
-            
             for idx, block in enumerate(self.extra_enc):
                 rgbp_token = block(rgbp_token)
                 if self.config.training.enable_repa:
@@ -752,9 +754,7 @@ class Images2LatentScene(nn.Module):
             registers = rgbp_token[:, :self.num_registers, :]
         rgbp_token = rgbp_token[:, self.num_registers:, :]
         if self.config.model.repa_concat:
-            input_img_features = self.get_image_feature(input.image) # Linear(encoder(I)) (b, np, d)
-            input_img_features = input_img_features.reshape(b * v_input, n_patches, -1)  # [b*v, n_patches, d]
-            input_repa_tokens = torch.cat((input_img_features, ori_rgbp_token), dim=2)  # [b*v, n_patches, d*2]
+            input_repa_tokens = torch.cat((rgbp_token, ori_rgbp_token), dim=2)  # [b*v, n_patches, d*2]
             input_repa_tokens = self.align_projector(input_repa_tokens) # [b*v, n_patches, d]
             print('input_repa_tokens', input_repa_tokens.shape)
         if self.image_encoder is not None and not self.config.training.enable_repa:
