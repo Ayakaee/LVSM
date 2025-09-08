@@ -335,7 +335,8 @@ while cur_train_step <= total_train_steps and (datetime.now() - training_start_t
         
         # export intermediate visualization results
         if export_inter_results:
-            vis_path = os.path.join(config.training.checkpoint_dir, f"iter_{cur_train_step:08d}")
+            vis_path = os.path.join(config.training.checkpoint_dir, 'visualize')
+            vis_path = os.path.join(vis_path, f"iter_{cur_train_step:08d}")
             os.makedirs(vis_path, exist_ok=True)
             # visualize_intermediate_results(vis_path, ret_dict)
             torch.cuda.empty_cache()

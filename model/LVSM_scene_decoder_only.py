@@ -19,7 +19,7 @@ import core.vision_encoder.pe as pe
 from torchvision.transforms import Normalize
 from model.repa_config import repa_map
 import random
-
+from utils.training_utils import format_number
 class Images2LatentScene(nn.Module):
     def __init__(self, config, logger=None):
         super().__init__()
@@ -102,18 +102,11 @@ class Images2LatentScene(nn.Module):
         if self.config.model.distill_half:
             d_model = d_model // 2
         if type == 'linear2':
-            if self.config.model.label2x:
-                projector = nn.Sequential(
-                nn.Linear(z_dim, dim),
+            projector = nn.Sequential(
+                nn.Linear(d_model, dim),
                 nn.SiLU(),
-                nn.Linear(dim, d_model),
+                nn.Linear(dim, z_dim),
             )
-            else:
-                projector = nn.Sequential(
-                    nn.Linear(d_model, dim),
-                    nn.SiLU(),
-                    nn.Linear(dim, z_dim),
-                )
         elif type == 'linear3':
             projector = nn.Sequential(
                 nn.Linear(d_model, dim),
@@ -289,7 +282,7 @@ class Images2LatentScene(nn.Module):
         config = self.config.model.transformer
         use_qk_norm = config.get("use_qk_norm", False)
         use_flex_attention = config.attention_arch == 'flex'
-        use_log_scale = config.get("use_log_scale", False)
+        use_log_scale = self.config.model.get("use_log_scale", False)
 
         # Create transformer blocks
         if config.mode == 'self':
@@ -306,7 +299,7 @@ class Images2LatentScene(nn.Module):
             self.cross_attn_blocks = nn.ModuleList([
                 QK_Norm_CrossAttentionBlock(
                     config.d, config.d_head, use_qk_norm=use_qk_norm, use_flex_attention=use_flex_attention, use_log_scale=use_log_scale
-                ) for _ in range(config.n_layer)
+                ) for _ in range(config.n_layer // 2)
             ])
             self.self_attn_blocks = None
             self.self_cross_blocks = None
@@ -639,7 +632,7 @@ class Images2LatentScene(nn.Module):
         # 24-layer Cross-Attention
         if self.cross_attn_blocks is not None:
             target_tokens = target_tokens.view(b, v_target * (n_patches + self.num_registers), d)
-            for idx in range(len(self.cross_attn_blocks) // 2):
+            for idx in range(len(self.cross_attn_blocks)):
                 if self.config.model.transformer.input_mode == 'embed' or self.config.model.transformer.input_mode == 'ffn':
                     if self.config.model.transformer.input_scope == 'local':
                         input_tokens = input_tokens.view(b * v_input, n_patches + self.num_registers, d)
@@ -651,13 +644,13 @@ class Images2LatentScene(nn.Module):
                                 self.repa_x['input'][idx + 1] = input_tokens[:, self.num_registers:, :]
                         input_tokens = input_tokens.view(b, v_input * (n_patches + self.num_registers), d)
                 
-                target_tokens = self.cross_attn_blocks[2*idx](input_tokens, target_tokens, attn_bias=attn_mask)
+                target_tokens = self.cross_attn_blocks[idx](input_tokens, target_tokens, attn_bias=attn_mask)
                 if extract_features:
-                    layer_features[f'cross_attn_{2*idx}'] = target_tokens.clone().detach()
+                    layer_features[f'cross_attn_{idx}'] = target_tokens.clone().detach()
                 
-                target_tokens = self.cross_attn_blocks[2*idx+1](input_tokens, target_tokens, attn_bias=attn_mask)
-                if extract_features:
-                    layer_features[f'cross_attn_{2*idx+1}'] = target_tokens.clone().detach()
+                # target_tokens = self.cross_attn_blocks[2*idx+1](input_tokens, target_tokens, attn_bias=attn_mask)
+                # if extract_features:
+                #     layer_features[f'cross_attn_{2*idx+1}'] = target_tokens.clone().detach()
             
             target_tokens = target_tokens.view(b * v_target, n_patches + self.num_registers, d)
         
@@ -726,7 +719,7 @@ class Images2LatentScene(nn.Module):
             return torch.cat([images * 2.0 - 1.0, pose_cond], dim=2)
     
     
-    def forward(self, data_batch, input, target, has_target_image=True, detach=False, train=True, extract_features=False):
+    def forward(self, data_batch, input, target, has_target_image=True, train=True, extract_features=False):
 
         # Process input images
         if self.config.model.concat_rgb:
@@ -1026,6 +1019,12 @@ class Images2LatentScene(nn.Module):
             print(f"Failed to load {ckpt_paths[-1]}")
             return None
         state_dict = checkpoint["model"]
+        total = 0
+        for k, v in state_dict.items():
+            if ('image_encoder' not in k and 'repa' not in k and 'loss' not in k):
+                # print(k, v.numel())
+                total += v.numel()
+        print(f'参数量：{format_number(total)}')
         if not self.config.training.use_compile:
             self.logger.info("discard _orig_mod. in loading model")
             state_dict = {k.replace('_orig_mod.', '', 1): v for k, v in state_dict.items()}

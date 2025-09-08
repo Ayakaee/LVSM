@@ -1,10 +1,2 @@
-import torch
-
-a = torch.randn(1, 2)
-b = a
-c = a * 2
-
-print(a)
-print(b)
-print(c)
-
+with open('test.txt', 'w') as f:
+    f.write(','.join(['1','2']))

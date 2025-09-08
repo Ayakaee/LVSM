@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 from einops import rearrange
 from torch.nn.attention.flex_attention import flex_attention
+import math
 
 try:
     import xformers.ops as xops
@@ -191,7 +192,7 @@ class QK_Norm_CrossAttention(nn.Module):
         fc_dropout=0.0,
         use_qk_norm=True,
         use_flex_attention=False,
-        use_log_scale=False,
+        use_log_scale=None,
     ):
         super().__init__()
         assert dim % head_dim == 0, f"Token dimension {dim} should be divisible by head dimension {head_dim}"
@@ -212,6 +213,12 @@ class QK_Norm_CrossAttention(nn.Module):
         if self.use_qk_norm:
             self.q_norm = RMSNorm(head_dim)
             self.k_norm = RMSNorm(head_dim)
+        if self.use_log_scale == 'none':
+            self.use_log_scale = None
+        if isinstance(self.use_log_scale, int):
+            self.scale = math.log(self.use_log_scale)
+        elif self.use_log_scale == 'auto':
+            self.scale = nn.Parameter(torch.ones(1, dtype=torch.bfloat16), requires_grad=True)
 
         # Learnable scale factor for QK scores (additional to the default head_dim scaling)
 
@@ -241,9 +248,9 @@ class QK_Norm_CrossAttention(nn.Module):
             k = self.k_norm(k)
 
         # Apply learnable scale factor
-        if self.use_log_scale:
+        if self.use_log_scale is not None:
             log_views = torch.log(torch.clamp(torch.tensor(v_input, dtype=torch.bfloat16), min=2))
-            scale = log_views - math.log(4) + 1
+            scale = log_views - self.scale + 1
             q = q * scale
             k = k * scale
 
@@ -290,7 +297,7 @@ class QK_Norm_SelfAttentionBlock(nn.Module):
         mlp_dropout=0.0,
         use_qk_norm=True,
         use_flex_attention=False,
-        use_log_scale=False,
+        use_log_scale=None,
     ):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim, elementwise_affine=ln_bias)
@@ -336,7 +343,7 @@ class QK_Norm_CrossAttentionBlock(nn.Module):
         mlp_dropout=0.0, 
         use_qk_norm=True,
         use_flex_attention=False,
-        use_learnable_scale=True,
+        use_log_scale=None,
     ):
         super().__init__()
         self.norm_q = nn.LayerNorm(dim, elementwise_affine=ln_bias)
@@ -384,7 +391,7 @@ class QK_Norm_SelfCrossAttentionBlock(nn.Module):
         mlp_dropout=0.0, 
         use_qk_norm=True,
         use_flex_attention=False,
-        use_log_scale=False,
+        use_log_scale=None,
     ):
         super().__init__()
         # Self-attention components

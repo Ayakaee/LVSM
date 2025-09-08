@@ -16,7 +16,8 @@ import fsspec
 import GPUtil
 import pandas as pd
 from loguru import logger
-
+import sys
+sys.path.append('/inspire/hdd/global_user/chenxinyan-240108120066/yihang/LVSM/objaverse-xl')
 import objaverse.xl as oxl
 from objaverse.utils import get_uid_from_str
 
@@ -98,8 +99,8 @@ def handle_found_object(
 
     Returns: True if the object was rendered successfully, False otherwise.
     """
-    save_uid = get_uid_from_str(file_identifier)
-    args = f"--object_path '{local_path}' --num_renders {num_renders}"
+    # save_uid = get_uid_from_str(file_identifier)
+    
 
     # get the GPU to use for rendering
     using_gpu: bool = True
@@ -115,8 +116,13 @@ def handle_found_object(
         raise ValueError(
             f"gpu_devices must be an int > 0, 0, or a list of ints. Got {gpu_devices}."
         )
-
-    with tempfile.TemporaryDirectory() as temp_dir:
+    
+    obj_paths = [os.path.join(local_path, filename) for filename in os.listdir(local_path)]
+    for obj_path in obj_paths[:3]:
+        save_uid = obj_path.split('/')[-1].split('.')[0]
+        args = f"--object_path '{obj_path}' --num_renders {num_renders}"
+        print(obj_path, save_uid)
+        temp_dir = render_dir
         # get the target directory for the rendering job
         target_directory = os.path.join(temp_dir, save_uid)
         os.makedirs(target_directory, exist_ok=True)
@@ -140,17 +146,17 @@ def handle_found_object(
             args += " --only_northern_hemisphere"
 
         # get the command to run
-        command = f"blender-3.2.2-linux-x64/blender --background --python blender_script.py -- {args}"
+        command = f"xvfb-run -a blender-3.2.2-linux-x64/blender --background --python blender_script.py -- {args}"
         if using_gpu:
             command = f"export DISPLAY=:0.{gpu_i} && {command}"
-
+        print(command)
         # render the object (put in dev null)
         subprocess.run(
             ["bash", "-c", command],
             timeout=render_timeout,
             check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            # stdout=subprocess.DEVNULL,
+            # stderr=subprocess.DEVNULL,
         )
 
         # check that the renders were saved successfully
@@ -184,28 +190,28 @@ def handle_found_object(
         with open(metadata_path, "w", encoding="utf-8") as f:
             json.dump(metadata_file, f, indent=2, sort_keys=True)
 
-        # Make a zip of the target_directory.
-        # Keeps the {save_uid} directory structure when unzipped
-        with zipfile.ZipFile(
-            f"{target_directory}.zip", "w", zipfile.ZIP_DEFLATED
-        ) as ziph:
-            zipdir(target_directory, ziph)
+            # Make a zip of the target_directory.
+            # Keeps the {save_uid} directory structure when unzipped
+            # with zipfile.ZipFile(
+            #     f"{target_directory}.zip", "w", zipfile.ZIP_DEFLATED
+            # ) as ziph:
+            #     zipdir(target_directory, ziph)
 
-        # move the zip to the render_dir
-        fs, path = fsspec.core.url_to_fs(render_dir)
+            # # move the zip to the render_dir
+            # fs, path = fsspec.core.url_to_fs(render_dir)
 
-        # move the zip to the render_dir
-        fs.makedirs(os.path.join(path, "renders"), exist_ok=True)
-        fs.put(
-            os.path.join(f"{target_directory}.zip"),
-            os.path.join(path, "renders", f"{save_uid}.zip"),
-        )
+            # # move the zip to the render_dir
+            # fs.makedirs(os.path.join(path, "renders"), exist_ok=True)
+            # fs.put(
+            #     os.path.join(f"{target_directory}.zip"),
+            #     os.path.join(path, "renders", f"{save_uid}.zip"),
+            # )
 
         # log that this object was rendered successfully
         if successful_log_file is not None:
             log_processed_object(successful_log_file, file_identifier, sha256)
 
-        return True
+    return True
 
 
 def handle_new_object(
@@ -400,56 +406,40 @@ def render_objects(
         processes = multiprocessing.cpu_count() * 3
 
     # get the objects to render
-    objects = get_example_objects()
-    objects.iloc[0]["fileIdentifier"]
-    objects = objects.copy()
-    logger.info(f"Provided {len(objects)} objects to render.")
+    # objects = get_example_objects()
+    
+    # objects.iloc[0]["fileIdentifier"]
+    # objects = objects.copy()
+    # logger.info(f"Provided {len(objects)} objects to render.")
+    # print(objects)
+    
+    # # get the already rendered objects
+    # fs, path = fsspec.core.url_to_fs(render_dir)
+    # try:
+    #     zip_files = fs.glob(os.path.join(path, "renders", "*.zip"), refresh=True)
+    # except TypeError:
+    #     # s3fs may not support refresh depending on the version
+    #     zip_files = fs.glob(os.path.join(path, "renders", "*.zip"))
+    # saved_ids = set(zip_file.split("/")[-1].split(".")[0] for zip_file in zip_files)
+    # logger.info(f"Found {len(saved_ids)} objects already rendered.")
 
-    # get the already rendered objects
-    fs, path = fsspec.core.url_to_fs(render_dir)
-    try:
-        zip_files = fs.glob(os.path.join(path, "renders", "*.zip"), refresh=True)
-    except TypeError:
-        # s3fs may not support refresh depending on the version
-        zip_files = fs.glob(os.path.join(path, "renders", "*.zip"))
-
-    saved_ids = set(zip_file.split("/")[-1].split(".")[0] for zip_file in zip_files)
-    logger.info(f"Found {len(saved_ids)} objects already rendered.")
-
-    # filter out the already rendered objects
-    objects["saveUid"] = objects["fileIdentifier"].apply(get_uid_from_str)
-    objects = objects[~objects["saveUid"].isin(saved_ids)]
-    objects = objects.reset_index(drop=True)
-    logger.info(f"Rendering {len(objects)} new objects.")
-
-    # shuffle the objects
-    objects = objects.sample(frac=1).reset_index(drop=True)
-
-    oxl.download_objects(
-        objects=objects,
-        processes=processes,
-        save_repo_format=save_repo_format,
-        download_dir=download_dir,
-        handle_found_object=partial(
-            handle_found_object,
-            render_dir=render_dir,
-            num_renders=num_renders,
-            only_northern_hemisphere=only_northern_hemisphere,
-            gpu_devices=parsed_gpu_devices,
-            render_timeout=render_timeout,
-        ),
-        handle_new_object=handle_new_object,
-        handle_modified_object=partial(
-            handle_modified_object,
-            render_dir=render_dir,
-            num_renders=num_renders,
-            only_northern_hemisphere=only_northern_hemisphere,
-            gpu_devices=parsed_gpu_devices,
-            render_timeout=render_timeout,
-        ),
-        handle_missing_object=handle_missing_object,
+    # # filter out the already rendered objects
+    # objects["saveUid"] = objects["fileIdentifier"].apply(get_uid_from_str)
+    # objects = objects[~objects["saveUid"].isin(saved_ids)]
+    # objects = objects.reset_index(drop=True)
+    # logger.info(f"Rendering {len(objects)} new objects.")
+    
+    handle_found_object(
+        local_path=download_dir,
+        file_identifier = '111',
+        sha256='foo',
+        metadata={'foo':'bar'},
+        render_dir=render_dir,
+        num_renders=num_renders,
+        only_northern_hemisphere=only_northern_hemisphere,
+        gpu_devices=parsed_gpu_devices,
+        render_timeout=render_timeout
     )
-
 
 if __name__ == "__main__":
     fire.Fire(render_objects)

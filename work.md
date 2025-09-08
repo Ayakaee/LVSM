@@ -81,3 +81,14 @@ https://www.overleaf.com/8873597924gjvmswvdpqwn#a1de62 去年的写作
 https://www.overleaf.com/7526643262ghrwsnkmwdjp#8ec810
 https://www.overleaf.com/7334783184qthtnrfpxzsq#912dc3
 https://www.overleaf.com/read/hgcbjhsjmxjb#87f2cf
+
+exp1
+相同训练时间（eg.2卡1天）
+点数>lvsm
+说明有训练效率的优势
+
+exp2
+和lvsm一样的训练时间scale up
+（大概率）：如果lvsm训练3天，我们的训练2天就收敛
+如果收敛的模型点数不比lvsm差
+说明模型本身能力合格

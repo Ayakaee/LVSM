@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from tqdm import tqdm
 
 # BASE_PATH = os.path.join(os.path.expanduser("~"), ".objaverse")
-BASE_PATH = '/inspire/hdd/global_user/chenxinyan-240108120066/yihang/LVSM/dataset'
+BASE_PATH = '/inspire/hdd/project/wuliqifa/chenxinyan-240108120066/dataset'
 
 __version__ = "<REPLACE_WITH_VERSION>"
 _VERSIONED_PATH = os.path.join(BASE_PATH, "hf-objaverse-v1")

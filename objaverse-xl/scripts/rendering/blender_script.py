@@ -62,6 +62,98 @@ def sample_point_on_sphere(radius: float) -> Tuple[float, float, float]:
         radius * math.cos(phi),
     )
 
+def set_camera_location_and_look_at_origin(location: Tuple[float, float, float]) -> bpy.types.Object:
+    """
+    Sets the camera location and makes it point towards the origin (0,0,0).
+    """
+    camera = bpy.data.objects["Camera"]
+    camera.location = Vector(location)
+
+    # Point camera to origin
+    direction = -camera.location
+    rot_quat = direction.to_track_quat("-Z", "Y")
+    camera.rotation_euler = rot_quat.to_euler()
+
+    return camera
+
+def get_fibonacci_sphere_camera(idx: int, num_renders: int, radius_min: float, radius_max: float, only_northern_hemisphere: bool):
+    radius = random.uniform(radius_min, radius_max)
+
+    # 从斐波那契球面上获取一个均匀分布的相机位置
+    if only_northern_hemisphere:
+        # 如果只在北半球，我们可以只取前一半的点
+        location = get_fibonacci_sphere_point(idx, num_renders * 2, radius)
+    else:
+        location = get_fibonacci_sphere_point(idx, num_renders, radius)
+        
+    camera = bpy.data.objects["Camera"]
+    camera.location = Vector(location)
+
+    # Point camera to origin
+    direction = -camera.location
+    rot_quat = direction.to_track_quat("-Z", "Y")
+    camera.rotation_euler = rot_quat.to_euler()
+    
+    return camera
+    
+def get_fibonacci_sphere_point(sample_index: int, num_samples: int, radius: float) -> Tuple[float, float, float]:
+    """
+    Generates a point on a sphere using the Fibonacci lattice method.
+    Ensures quasi-uniform distribution.
+    """
+    golden_angle = math.pi * (3.0 - math.sqrt(5.0))  # Golden angle in radians
+    y = 1.0 - (sample_index / float(num_samples - 1)) * 2.0  # y goes from 1 to -1
+    radius_at_y = math.sqrt(1.0 - y * y)  # radius at y
+
+    theta = golden_angle * sample_index  # golden angle increment
+
+    x = math.cos(theta) * radius_at_y
+    z = math.sin(theta) * radius_at_y
+
+    return (x * radius, y * radius, z * radius)
+
+def get_orbit_camera_location(
+    index: int,
+    num_renders: int,
+    num_elevation_rings: int,
+    radius_min: float,
+    radius_max: float,
+    elevation_base: float,
+    elevation_jitter: float,
+    azimuth_jitter: float,
+    only_northern_hemisphere: bool
+) -> Tuple[float, float, float]:
+    """
+    Generates a camera location on a fixed orbit with jitter.
+    """
+     # 计算当前视角属于哪个高度环
+    # elevation_id = index // (num_renders // num_elevation_rings)
+    if num_elevation_rings == 1 and only_northern_hemisphere:
+        elevation_base = math.pi / 2 - elevation_base
+    else:
+        raise NotImplementedError('unsupported setting')
+    # if only_northern_hemisphere:
+    #     elevation_base = ((math.pi / 2) / num_elevation_rings) * (elevation_id + 0.5) # from 0 to pi/2
+    # else:
+    #     elevation_base = (math.pi / num_elevation_rings) * (elevation_id + 0.5) # from 0 to pi
+    
+    # 计算在该环上的基础角度
+    num_in_ring = num_renders // num_elevation_rings
+    azimuth_id = index % num_in_ring
+    azimuth_base = (2 * math.pi / num_in_ring) * azimuth_id
+
+    # 添加抖动
+    elevation_base = math.pi / 18
+    elevation = elevation_base + np.random.uniform(-elevation_jitter, elevation_jitter)
+    azimuth = azimuth_base + np.random.uniform(-azimuth_jitter, azimuth_jitter)
+    radius = np.random.uniform(radius_min, radius_max)
+    print('--------------', elevation, azimuth, radius)
+    # 从球坐标转换为笛卡尔坐标
+    x = radius * math.cos(elevation) * math.cos(azimuth)
+    y = radius * math.cos(elevation) * math.sin(azimuth)
+    z = radius * math.sin(elevation)
+    
+    return (x, y, z)
 
 def _sample_spherical(
     radius_min: float = 1.5,
@@ -294,6 +386,7 @@ def load_object(object_path: str) -> None:
     Returns:
         None
     """
+    print(object_path)
     file_extension = object_path.split(".")[-1].lower()
     if file_extension is None:
         raise ValueError(f"Unsupported file type: {object_path}")
@@ -764,16 +857,21 @@ def render_object(
 
     # Set up cameras
     cam = scene.objects["Camera"]
-    cam.data.lens = 35
-    cam.data.sensor_width = 32
+    
+    target_fovy_degrees = 49.1
+    cam.data.angle_y = math.radians(target_fovy_degrees)
+    cam.data.sensor_fit = 'VERTICAL'
+
+    # cam.data.lens = 35
+    # cam.data.sensor_width = 32
 
     # Set up camera constraints
-    cam_constraint = cam.constraints.new(type="TRACK_TO")
-    cam_constraint.track_axis = "TRACK_NEGATIVE_Z"
-    cam_constraint.up_axis = "UP_Y"
-    empty = bpy.data.objects.new("Empty", None)
-    scene.collection.objects.link(empty)
-    cam_constraint.target = empty
+    # cam_constraint = cam.constraints.new(type="TRACK_TO")
+    # cam_constraint.track_axis = "TRACK_NEGATIVE_Z"
+    # cam_constraint.up_axis = "UP_Y"
+    # empty = bpy.data.objects.new("Empty", None)
+    # scene.collection.objects.link(empty)
+    # cam_constraint.target = empty
 
     # Extract the metadata. This must be done before normalizing the scene to get
     # accurate bounding box information.
@@ -813,9 +911,25 @@ def render_object(
     # render the images
     for i in range(num_renders):
         # set camera
-        camera = randomize_camera(
-            only_northern_hemisphere=only_northern_hemisphere,
+        # camera = randomize_camera(
+        #     radius_min=1.5, radius_max=2.8, minz=0, maxz=1, only_northern_hemisphere=only_northern_hemisphere,
+        # )
+        
+        # camera = get_fibonacci_sphere_camera(
+        #     i, num_renders, radius_min=1.5, radius_max=2.8, only_northern_hemisphere=only_northern_hemisphere,
+        # )
+        location = get_orbit_camera_location(
+            index=i,
+            num_renders=num_renders,
+            num_elevation_rings=1,
+            radius_min=1.5,       # (1.5 + 2.8) / 2
+            radius_max=2.8,     # (2.8 - 1.5) / 2
+            elevation_base=math.radians(20),
+            elevation_jitter=math.radians(2), # 10度抖动
+            azimuth_jitter=math.radians(2),
+            only_northern_hemisphere=only_northern_hemisphere
         )
+        camera = set_camera_location_and_look_at_origin(location)
 
         # render the image
         render_path = os.path.join(output_dir, f"{i:03d}.png")
@@ -891,6 +1005,9 @@ if __name__ == "__main__":
     ].preferences.compute_device_type = "CUDA"  # or "OPENCL"
 
     # Render the images
+    
+    # obj_lists = os.listdir(args.object_path)
+    
     render_object(
         object_file=args.object_path,
         num_renders=args.num_renders,

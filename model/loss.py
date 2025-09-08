@@ -24,10 +24,10 @@ def calculate_proj_loss(x_j, label_j, loss_type):
         return mean_flat(-(x_j * label_j).sum(dim=-1))
     elif loss_type == 'l2':
         # L2 loss
-        return mean_flat(F.mse_loss(x_j, label_j, reduction='none').sum(dim=-1))
+        return mean_flat(F.mse_loss(x_j, label_j, reduction='none').sum(dim=-1)) / x_j.shape[-1]
     elif loss_type == 'sl1':
         # Smooth L1 loss
-        return mean_flat(F.smooth_l1_loss(x_j, label_j, reduction='none').sum(dim=-1))
+        return mean_flat(F.smooth_l1_loss(x_j, label_j, reduction='none').sum(dim=-1)) / x_j.shape[-1]
     else:
         # Default to cosine loss
         label_j = torch.nn.functional.normalize(label_j, dim=-1) 
@@ -221,10 +221,7 @@ class LossComputer(nn.Module):
                         x = repa_x[repa_type][idx]
                         if self.config.model.distill_half:
                             x = x[:, :, :d_model//2]
-                        if self.config.model.label2x:
-                            label = repa_projector[repa_type][str(key)][str(idx)](label)
-                        else:
-                            x = repa_projector[repa_type][str(key)][str(idx)](x)
+                        x = repa_projector[repa_type][str(key)][str(idx)](x)
                         for (x_j, label_j) in zip(x, label):
                             proj_loss += calculate_proj_loss(x_j, label_j, self.config.training.proj_loss_type)
                         cnt += x.shape[0]
