@@ -228,15 +228,15 @@ def main():
     logger = setup_logging(args.log_file)
     
     if args.method == "process_pool":
-        for retry in range(1):        
-            renderer = ParallelBlenderRenderer(max_workers=args.max_workers, log_file=logger)
-            completed, skipped, timeout, failed = renderer.render_parallel_process_pool(
-                obj_paths, args.output_dir, args.engine, 
-                args.only_northern_hemisphere, args.num_renders, args.time_out * (retry + 1)
-            )
-            logger.info(f'try {retry}. Completed: {completed}, Skipped: {skipped}, Failed: {failed}')
-            if timeout == 0:
-                break
+        # for retry in range(1):        
+        renderer = ParallelBlenderRenderer(max_workers=args.max_workers, log_file=logger)
+        completed, skipped, timeout, failed = renderer.render_parallel_process_pool(
+            obj_paths, args.output_dir, args.engine, 
+            args.only_northern_hemisphere, args.num_renders, args.time_out
+        )
+        logger.info(f'Completed: {completed}, Skipped: {skipped}, Timeout: {timeout}, Failed: {failed}')
+            # if timeout == 0:
+                # break
     else:
         render_parallel_subprocess(
             obj_paths, args.output_dir, args.engine,

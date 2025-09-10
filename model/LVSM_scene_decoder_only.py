@@ -1006,8 +1006,8 @@ class Images2LatentScene(nn.Module):
     @torch.no_grad()
     def load_ckpt(self, load_path):
         if os.path.isdir(load_path):
-            ckpt_names = [file_name for file_name in os.listdir(load_path) if (file_name.endswith(".pt") and not file_name.startswith('ckpt_t'))]
-            ckpt_names = sorted(ckpt_names, key=lambda x: x)
+            ckpt_names = [file_name for file_name in os.listdir(load_path) if (file_name.endswith(".pt") and not 'ckpt_t' in file_name)]
+            ckpt_names = sorted(ckpt_names, key=lambda x: int(x.split('_')[-1].split('.')[0]))
             ckpt_paths = [os.path.join(load_path, ckpt_name) for ckpt_name in ckpt_names]
         else:
             ckpt_paths = [load_path]

@@ -84,8 +84,8 @@ model.eval()
 if config.inference.extract_features and ddp_info.is_main_process:
     os.makedirs(config.inference.feature_save_dir, exist_ok=True)
 
-st, end = (0, 500000)
-step = 5
+st, end = (2100, 500000)
+step = 1
 print(model_path)
 print(os.listdir(model_path))
 models = [name for name in os.listdir(model_path) if 'ckpt_t' not in name and 'ckpt' in name and st <= int(name.split('_')[1].split('.')[0]) // 100 <= end]
@@ -103,8 +103,17 @@ with torch.no_grad(), torch.autocast(
     device_type="cuda",
     dtype=amp_dtype_mapping[config.training.amp_dtype],
 ):
-    for name in models:
+    for i, name in enumerate(models):
+        # if i == 0:
+        del model
+        torch.cuda.empty_cache()
+        
+        LVSM = importlib.import_module(module).__dict__[class_name]
+        model = LVSM(config, logger).to(ddp_info.device)
+        model = DDP(model, device_ids=[ddp_info.local_rank])
         model.module.load_ckpt(os.path.join(model_path, name))
+        model.eval()
+        datasampler.set_epoch(0)
         for batch_idx, batch in enumerate(dataloader):
             batch = {k: v.to(ddp_info.device) if type(v) == torch.Tensor else v for k, v in batch.items()}
             input, target = model.module.process_data(batch, has_target_image=True, target_has_input = config.training.target_has_input, compute_rays=True)

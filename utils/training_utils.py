@@ -86,8 +86,8 @@ def create_lr_scheduler(optimizer, param_update_steps, warm_up_steps, scheduler_
 
 def find_checkpoints(load_path):
     if os.path.isdir(load_path):
-        ckpt_names = [file_name for file_name in os.listdir(load_path) if file_name.endswith(".pt")]
-        ckpt_names = sorted(ckpt_names, key=lambda x: x)
+        ckpt_names = [file_name for file_name in os.listdir(load_path) if file_name.endswith(".pt") and not 'ckpt_t' in file_name]
+        ckpt_names = sorted(ckpt_names, key=lambda x: int(x.split('_')[-1].split('.')[0]))
         ckpt_paths = [os.path.join(load_path, ckpt_name) for ckpt_name in ckpt_names]
     else:
         if load_path.endswith(".pt"):
