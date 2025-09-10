@@ -2,6 +2,7 @@ metric_checkpoint
 pretrained_models
 preprocessed_data
 experiments
+*log
 extracted_features/
 feature_visualizations-o/
 feature_visualizations/
