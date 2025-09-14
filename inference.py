@@ -99,7 +99,7 @@ with torch.no_grad(), torch.autocast(
             
         if config.inference.get("render_video", False):
             result= model.module.render_video(result, **config.inference.render_video_config)
-        export_results(result, config.inference.checkpoint_dir, compute_metrics=config.inference.get("compute_metrics"))
+        export_results(result, config.inference.checkpoint_dir, compute_metrics=config.inference.get("compute_metrics"), resized=config.inference.get('resize', False))
 dist.barrier()
 
 if ddp_info.is_main_process and config.inference.get("compute_metrics", False):

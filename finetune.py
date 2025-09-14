@@ -18,7 +18,7 @@ import torch._dynamo
 torch._dynamo.config.suppress_errors = True
 from datetime import datetime
 
-def load_pretrained_checkpoint(model, checkpoint_path, device):
+def load_pretrained_checkpoint(model, checkpoint_path, config):
     """
     Load pretrained checkpoint from 256 resolution training and adapt to 512 resolution.
     """
@@ -26,12 +26,15 @@ def load_pretrained_checkpoint(model, checkpoint_path, device):
     
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location="cpu",  weights_only=True)
+    state_dict = checkpoint["model"]
+    if not config.training.use_compile:
+        state_dict = {k.replace('_orig_mod.', '', 1): v for k, v in state_dict.items()}
     
     # Load model state dict with strict=False to handle resolution changes
     if isinstance(model, DDP):
-        missing_keys, unexpected_keys = model.module.load_state_dict(checkpoint['model'], strict=False)
+        missing_keys, unexpected_keys = model.module.load_state_dict(state_dict, strict=False)
     else:
-        missing_keys, unexpected_keys = model.load_state_dict(checkpoint['model'], strict=False)
+        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
     
     print_rank0(f"Loaded checkpoint successfully")
     print_rank0(f"Missing keys: {len(missing_keys)}")
@@ -125,7 +128,7 @@ def main():
     print_rank0(f"  Resolution: 512x512")
     print_rank0(f"  Learning rate: {config.training.lr}")
     print_rank0(f"  Total batch size: {total_batch_size}")
-    print_rank0(f"  Training steps: {config.training.train_steps}")
+    print_rank0(f"  Training steps: {total_train_steps}")
     print_rank0(f"  Pretrained checkpoint: {pretrained_checkpoint_path}")
     
     # Record training start time
@@ -175,7 +178,7 @@ def main():
     model = DDP(model, device_ids=[ddp_info.local_rank], find_unused_parameters=False)
     
     # Load pretrained checkpoint
-    model = load_pretrained_checkpoint(model, pretrained_checkpoint_path, ddp_info.device)
+    model = load_pretrained_checkpoint(model, pretrained_checkpoint_path, config)
     
     # Create optimizer and scheduler for finetuning
     optimizer, optimized_param_dict, all_param_dict = create_optimizer(
@@ -184,6 +187,7 @@ def main():
         config.training.lr,
         (config.training.beta1, config.training.beta2),
     )
+    optim_param_list = list(optimized_param_dict.values())
     
     scheduler_type = config.training.get("scheduler_type", "cosine")
     lr_scheduler = create_lr_scheduler(

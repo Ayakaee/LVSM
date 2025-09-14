@@ -229,6 +229,8 @@ def local_backup_src_code(
             
             try:
                 file_size = src_file.stat().st_size
+                if file_size > 10 * 1024 * 1024:
+                    continue
                 total_size += file_size
                 files.append((src_file, dst_file, file_size))
             except (FileNotFoundError, PermissionError) as e:

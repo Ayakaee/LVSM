@@ -166,16 +166,25 @@ while cur_train_step <= total_train_steps and (datetime.now() - training_start_t
         print(f"Current Rank {ddp_info.local_rank} Ran out of data. Resetting dataloader epoch to {cur_epoch}; might take a while...")
         datasampler.set_epoch(cur_epoch)
         dataloader_iter = iter(dataloader)
-        data = next(dataloader_iter)
+        try:
+            data = next(dataloader_iter)
+        except Exception as e:
+            logger.warning(f"DataLoader error after reset: {e}, skipping batch")
+            continue
+    except Exception as e:
+        logger.warning(f"DataLoader error: {e}, skipping batch")
+        continue
 
     batch = {k: v.to(ddp_info.device) if type(v) == torch.Tensor else v for k, v in data.items()}
     data_time = time.time() - tic
+    
     with torch.autocast(
         enabled=config.training.use_amp,
         device_type="cuda",
         dtype=amp_dtype_mapping[config.training.amp_dtype],
     ):
         input, target = model.module.process_data(batch, has_target_image=True, target_has_input = config.training.target_has_input, compute_rays=True)
+        # print(input.image.shape)
         ret_dict = model(batch, input, target)
 
     current_epoch = int(cur_train_step * total_batch_size // len(dataset))

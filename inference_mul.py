@@ -84,8 +84,8 @@ model.eval()
 if config.inference.extract_features and ddp_info.is_main_process:
     os.makedirs(config.inference.feature_save_dir, exist_ok=True)
 
-st, end = (2100, 500000)
-step = 1
+st, end = (204, 500000)
+step = 5
 print(model_path)
 print(os.listdir(model_path))
 models = [name for name in os.listdir(model_path) if 'ckpt_t' not in name and 'ckpt' in name and st <= int(name.split('_')[1].split('.')[0]) // 100 <= end]

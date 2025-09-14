@@ -4,8 +4,8 @@ from tqdm import tqdm
 
 # 1. 设置你的路径
 gso_root_dir = "/inspire/hdd/global_user/chenxinyan-240108120066/yihang/LVSM/dataset/gso"
-output_render_dir = "data_gso_render_20"
-rendering_script_path = "blender_script.py" # 假设和这个脚本在同一目录
+output_render_dir = "/inspire/hdd/global_user/chenxinyan-240108120066/yihang/LVSM/dataset/gso_render3"
+rendering_script_path = "blender_script_gso.py" # 假设和这个脚本在同一目录
 
 # 获取所有 GSO 对象的文件夹名称
 object_folders = [f for f in os.listdir(gso_root_dir) if os.path.isdir(os.path.join(gso_root_dir, f))]
@@ -36,7 +36,7 @@ for folder_name in tqdm(object_folders, desc="Rendering GSO objects"):
         '--',
         '--object_path', obj_path,
         '--output_dir', final_output_path,
-        '--num_renders', '8',  # 你想要的渲染视角数量
+        '--num_renders', '14',  # 你想要的渲染视角数量
         '--engine', 'BLENDER_EEVEE', # CYCLES 对真实感渲染效果更好，EEVEE 速度更快
         '--only_northern_hemisphere' # <-- 关键！
     ]

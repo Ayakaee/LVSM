@@ -147,10 +147,10 @@ def replay_logs_to_wandb(log_file_path, config_path, api_key_path, run_name=None
 def main():
     """主函数"""
     # 配置路径 - 请根据实际情况修改
-    log_file_path = "logs/9.5-dinov3-ex=0-8-3-layer=24-scale"  # 你的日志文件路径
+    log_file_path = "logs/9.10-dinov3-ex=4-8-3-layer=24-finetune"  # 你的日志文件路径
     config_path = "configs/LVSM_ours.yaml"  # 你的配置文件路径  
     api_key_path = "configs/api_keys.yaml"  # API密钥文件路径
-    run_name = "0719-baseline-8-replay"  # 可选：自定义运行名称
+    run_name = log_file_path.split('/')[-1]  # 可选：自定义运行名称
     
     # 检查文件是否存在
     files_to_check = [

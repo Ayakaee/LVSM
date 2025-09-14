@@ -547,7 +547,7 @@ class Images2LatentScene(nn.Module):
             x = rearrange(image, "b v c h w -> (b v) c h w")
             
             use_patch_interpolation = self.config.model.image_tokenizer.get("use_patch_interpolation", False)
-            if 'dino' in enc_type:
+            if 'dinov2' in enc_type:
                 if use_patch_interpolation:
                     x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
                     x = torch.nn.functional.interpolate(x, 336, mode=inter_mode)
@@ -556,7 +556,7 @@ class Images2LatentScene(nn.Module):
                     x = torch.nn.functional.interpolate(x, 448, mode=inter_mode)
             elif 'dinov3' in enc_type:
                 x = Normalize(IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD)(x)
-                x = torch.nn.functional.interpolate(x, 512, mode='bicubic')
+                x = torch.nn.functional.interpolate(x, self.config.model.image_tokenizer.image_size * 2, mode='bicubic')
             elif 'pe' in enc_type:
                 resolution = 336 if 'core' in enc_type else 512
                 if use_patch_interpolation:
@@ -582,7 +582,7 @@ class Images2LatentScene(nn.Module):
                 if 'pe' in enc_type:
                     pass
                 current_grid_size = int(x.shape[1] ** 0.5)
-                target_grid_size = 32
+                target_grid_size = self.config.model.image_tokenizer.image_size // self.config.model.image_tokenizer.patch_size
                 for idx in self.repa_label[repa_type].keys():
                     x = self.repa_label[repa_type][idx]
                     x = rearrange(x, "b (h w) d -> b d h w", h=current_grid_size, w=current_grid_size)

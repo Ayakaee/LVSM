@@ -112,13 +112,25 @@ def compute_ssim(
     # Convert back to tensor on the same device as input
     return torch.tensor(ssim_values, dtype=predicted.dtype, device=predicted.device)
 
-
+@torch.no_grad()
+def resize_image(image):
+    b, vi = image.shape[:2]
+    image = rearrange(image, 'b v c h w -> (b v) c h w')
+    image = torch.nn.functional.interpolate(
+        image, 
+        size=(256, 256), 
+        mode='bilinear', 
+        align_corners=False
+    )
+    image = rearrange(image, '(b v) c h w -> b v c h w', b=b, v=vi)
+    return image
 
 @torch.no_grad()
 def export_results(
     result: edict,
     out_dir: str, 
-    compute_metrics: bool = False
+    compute_metrics: bool = False,
+    resized: bool = False
 ):
     """
     Save results including images and optional metrics and videos.
@@ -131,6 +143,12 @@ def export_results(
     os.makedirs(out_dir, exist_ok=True)
     
     input_data, target_data = result.input, result.target
+    print(input_data.image.shape)
+    if resized:
+        input_data.image = resize_image(input_data.image)
+        target_data.image = resize_image(target_data.image)
+        result.render = resize_image(result.render)
+        
     for batch_idx in range(input_data.image.size(0)):
         uid = input_data.index[batch_idx, 0, -1].item()
         scene_name = input_data.scene_name[batch_idx]
