@@ -143,7 +143,6 @@ def export_results(
     os.makedirs(out_dir, exist_ok=True)
     
     input_data, target_data = result.input, result.target
-    print(input_data.image.shape)
     if resized:
         input_data.image = resize_image(input_data.image)
         target_data.image = resize_image(target_data.image)

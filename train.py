@@ -37,6 +37,14 @@ if ddp_info.is_main_process:
     init_wandb_and_backup(config)
 dist.barrier()
 
+# Load dataset
+dataset_name = config.training.get("dataset_name", "data.dataset.Dataset")
+module, class_name = dataset_name.rsplit(".", 1)
+Dataset = importlib.import_module(module).__dict__[class_name]
+dataset = Dataset(config)
+assert (not config.training.use_view_masking) or config.training.view_max == config.training.num_input_views
+config.training.dataset_len = len(dataset)
+print('dataset ok')
 total_num_epochs = config.training.train_epochs
 grad_accum_steps = config.training.grad_accum_steps
 batch_size_per_gpu = config.training.batch_size_per_gpu
@@ -44,7 +52,7 @@ total_batch_size = batch_size_per_gpu * ddp_info.world_size * grad_accum_steps
 total_train_steps = int(total_num_epochs * config.training.dataset_len // (total_batch_size))
 total_param_update_steps = total_train_steps
 total_train_steps = total_train_steps * grad_accum_steps # real train steps when using gradient accumulation
-save_every_steps = int(config.training.dataset_len // (total_batch_size) * config.training.checkpoint_every_epoch) + 1
+save_every_steps = int(config.training.dataset_len * config.training.checkpoint_every_epoch // (total_batch_size) ) + 1
 
 # 记录训练开始时间
 training_start_time = datetime.now()
@@ -81,13 +89,7 @@ amp_dtype_mapping = {
     'tf32': torch.float32
 }
 
-# Load dataset
-dataset_name = config.training.get("dataset_name", "data.dataset.Dataset")
-module, class_name = dataset_name.rsplit(".", 1)
-Dataset = importlib.import_module(module).__dict__[class_name]
-dataset = Dataset(config)
-assert (not config.training.use_view_masking) or config.training.view_max == config.training.num_input_views
-
+print('before datasampler')
 datasampler = DistributedSampler(dataset)
 dataloader = DataLoader(
     dataset,
@@ -101,18 +103,19 @@ dataloader = DataLoader(
     sampler=datasampler,
 )
 dataloader_iter = iter(dataloader)
-
+print('dataloader ok')
 
 
 module, class_name = config.model.class_name.rsplit(".", 1)
 LVSM = importlib.import_module(module).__dict__[class_name]
 model = LVSM(config, logger).to(ddp_info.device)
+print('model ok')
 if config.training.use_compile:
     model = torch.compile(model)
 model = DDP(model, device_ids=[ddp_info.local_rank], find_unused_parameters=False)
 # if config.training.enable_repa:
 #     encoders, encoder_types, architectures = load_encoders(config.model.encoder_type, ddp_info.device, 256)
-
+print('ddpmodelcompile ok')
 optimizer, optimized_param_dict, all_param_dict = create_optimizer(
     model,
     config.training.weight_decay,
@@ -120,7 +123,7 @@ optimizer, optimized_param_dict, all_param_dict = create_optimizer(
     (config.training.beta1, config.training.beta2),
 )
 optim_param_list = list(optimized_param_dict.values())
-
+print('optimizer ok')
 scheduler_type = config.training.get("scheduler_type", "cosine")
 lr_scheduler = create_lr_scheduler(
     optimizer,
@@ -141,7 +144,7 @@ optimizer, lr_scheduler, cur_train_step, cur_param_update_step = auto_resume_job
     lr_scheduler,
     reset_training_state,
 )
-
+print('sche ok')
 enable_grad_scaler = config.training.use_amp and config.training.amp_dtype == "fp16"
 scaler = torch.cuda.amp.GradScaler(enabled=enable_grad_scaler)
 print_rank0(f"Grad scaler enabled: {enable_grad_scaler}")
@@ -347,7 +350,8 @@ while cur_train_step <= total_train_steps and (datetime.now() - training_start_t
             vis_path = os.path.join(config.training.checkpoint_dir, 'visualize')
             vis_path = os.path.join(vis_path, f"iter_{cur_train_step:08d}")
             os.makedirs(vis_path, exist_ok=True)
-            # visualize_intermediate_results(vis_path, ret_dict)
+            print(111111111)
+            visualize_intermediate_results(vis_path, ret_dict)
             torch.cuda.empty_cache()
             model.train()
 

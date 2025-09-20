@@ -28,6 +28,9 @@ os.environ["OMP_NUM_THREADS"] = str(config.training.get("num_threads", 1))
 ddp_info = init_distributed(seed=777)
 dist.barrier()
 
+def print_gpu_memory():
+    print(f"当前显存占用: {torch.cuda.memory_allocated() / 1024**2:.2f} MB")
+    print(f"显存峰值占用: {torch.cuda.max_memory_allocated() / 1024**2:.2f} MB")
 
 # Set up tf32
 torch.backends.cuda.matmul.allow_tf32 = config.training.use_tf32
@@ -85,6 +88,10 @@ dist.barrier()
 datasampler.set_epoch(0)
 model.eval()
 
+file = 'tmp.csv'
+with open(file, 'a', encoding='utf-8') as f:
+    f.write(','.join(['input', 'target', 'flops', 'memory', 'time']) + '\n')
+    
 # 如果启用特征提取，创建保存目录
 if config.inference.extract_features and ddp_info.is_main_process:
     os.makedirs(config.inference.feature_save_dir, exist_ok=True)
@@ -95,18 +102,35 @@ with torch.no_grad(), torch.autocast(
     dtype=amp_dtype_mapping[config.training.amp_dtype],
 ):
     for batch_idx, batch in enumerate(dataloader):
-        batch = {k: v.to(ddp_info.device) if type(v) == torch.Tensor else v for k, v in batch.items()}
-        input, target = model.module.process_data(batch, has_target_image=True, target_has_input = config.training.target_has_input, compute_rays=True)
-        
-        
-        flops, params = profile(model, inputs=(batch, input, target, False, False, False))
-        print(f"FLOPs: {flops / 1e9:.2f} GFLOPs") # GFLOPs
-        print(f"参数量: {params / 1e6:.2f} M") # M (Million)
-        
-        tic = time.time()
-        for i in range(20):
-            result = model(batch, input, target, has_target_image=False, train=False)
-        print(f'推理用时：{(time.time() - tic) / 20}')
+        print_gpu_memory()
+        batch_o = {k: v.to(ddp_info.device) if type(v) == torch.Tensor else v for k, v in batch.items()}
+        for vi in range(4,5):
+            for vt in range(8,9):
+                torch.cuda.reset_peak_memory_stats()
+                metrics = [str(vi), str(vt)]
+                batch = batch_o.copy()
+                model.module.config.training.num_input_views = vi
+                model.module.config.training.num_target_views = vt
+                model.module.config.training.num_views = vi + vt
+                for k, v in batch.items():
+                    if hasattr(v, 'shape'):
+                        batch[k] = torch.repeat_interleave(v, vi+vt, dim=1)
+                input, target = model.module.process_data(batch, has_target_image=True, target_has_input = config.training.target_has_input, compute_rays=True)
+                flops, params = profile(model, inputs=(batch, input, target, False, False, False))
+                print(f"FLOPs: {flops / 1e9:.2f} GFLOPs") # GFLOPs
+                print(f"参数量: {params / 1e6:.2f} M") # M (Million)
+                
+                metrics.append(f'{flops / 1e9:.2f}')
+                metrics.append(f'{torch.cuda.max_memory_allocated() / 1024**2:.2f}')
+                print_gpu_memory()
+                
+                tic = time.time()
+                for i in range(20):
+                    result = model(batch, input, target, has_target_image=False, train=False)
+                print(f'推理用时：{(time.time() - tic) / 20}')
+                metrics.append(f'{(time.time() - tic) / 20 * 1000:.2f}')
+                with open(file, 'a', encoding='utf-8') as f:
+                    f.write(','.join(metrics) + '\n')
         break
 
 

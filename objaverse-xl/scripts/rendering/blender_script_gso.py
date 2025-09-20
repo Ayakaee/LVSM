@@ -136,7 +136,7 @@ def get_orbit_camera_location(
     num_in_ring = num_renders // num_elevation_rings
     azimuth_id = index % num_in_ring
     if index < 4:
-        azimuth_base = (math.pi / 2) * azimuth_id
+        azimuth_base = (math.pi / 2) * azimuth_id + math.pi / 4
     else:
         azimuth_base = (2 * math.pi / (num_in_ring - 4)) * (azimuth_id - 4)
 
@@ -921,8 +921,8 @@ def render_object(
             num_renders=num_renders,
             num_elevation_rings=1,
             radius_min=1.5,       # (1.5 + 2.8) / 2
-            radius_max=2.8,     # (2.8 - 1.5) / 2
-            elevation_base=math.radians(20),
+            radius_max=1.5,     # (2.8 - 1.5) / 2
+            elevation_base=math.radians(70),
             elevation_jitter=math.radians(2), # 10度抖动
             azimuth_jitter=math.radians(2),
             only_northern_hemisphere=only_northern_hemisphere

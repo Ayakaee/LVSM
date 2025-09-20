@@ -90,14 +90,14 @@ module, class_name = dataset_name.rsplit(".", 1)
 Dataset = importlib.import_module(module).__dict__[class_name]
 dataset = Dataset(config)
 
+dataset = torch.utils.data.Subset(dataset, range(32))
+
 datasampler = DistributedSampler(dataset)
 dataloader = DataLoader(
     dataset,
     batch_size=config.training.batch_size_per_gpu,
     shuffle=False,
-    num_workers=config.training.num_workers,
-    prefetch_factor=config.training.prefetch_factor,
-    persistent_workers=True,
+    num_workers=0,
     pin_memory=False,
     drop_last=True,
     sampler=datasampler
@@ -164,7 +164,7 @@ with torch.no_grad(), torch.autocast(
                         print(f"保存特征 {layer_name} 到 {feature_path}, 形状: {np_features.shape}")
         else:
             result = model(batch, input, target, train=False)
-        result, attention_weights = get_attention_weights_external(model, batch, input, target, layer_idx=5, block_type='self_cross')
+        # result, attention_weights = get_attention_weights_external(model, batch, input, target, layer_idx=5, block_type='self_cross')
         if config.inference.get("render_video", False):
             result= model.module.render_video(result, **config.inference.render_video_config)
         export_results(result, config.inference.checkpoint_dir, compute_metrics=config.inference.get("compute_metrics"))

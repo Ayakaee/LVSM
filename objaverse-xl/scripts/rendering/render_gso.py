@@ -4,7 +4,7 @@ from tqdm import tqdm
 
 # 1. 设置你的路径
 gso_root_dir = "/inspire/hdd/global_user/chenxinyan-240108120066/yihang/LVSM/dataset/gso"
-output_render_dir = "/inspire/hdd/global_user/chenxinyan-240108120066/yihang/LVSM/dataset/gso_render3"
+output_render_dir = "/inspire/hdd/global_user/chenxinyan-240108120066/yihang/LVSM/dataset/gso_render6"
 rendering_script_path = "blender_script_gso.py" # 假设和这个脚本在同一目录
 
 # 获取所有 GSO 对象的文件夹名称
@@ -24,7 +24,7 @@ for folder_name in tqdm(object_folders, desc="Rendering GSO objects"):
     final_output_path = os.path.join(output_render_dir, folder_name)
     
     # 如果已经渲染过，可以跳过
-    if os.path.exists(final_output_path):
+    if os.path.exists(final_output_path) and len(os.listdir(final_output_path)) == 29:
         print(f"Skipping {folder_name}: Already rendered.")
         continue
 

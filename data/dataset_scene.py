@@ -30,6 +30,7 @@ class Dataset(Dataset):
         self.inference = self.config.inference.get("if_inference", False)
         # Load file that specifies the input and target view indices to use for inference
         if self.inference:
+            self.all_scene_paths = self.all_scene_paths
             self.view_idx_list = dict()
             if self.config.inference.get("view_idx_file_path", None) is not None:
                 if os.path.exists(self.config.inference.view_idx_file_path):
@@ -45,6 +46,7 @@ class Dataset(Dataset):
                             filtered_scene_paths.append(scene)
 
                     self.all_scene_paths = filtered_scene_paths
+        print(self.all_scene_paths[0])
 
 
     def __len__(self):
@@ -153,6 +155,7 @@ class Dataset(Dataset):
     def __getitem__(self, idx):
         # try:
         scene_path = self.all_scene_paths[idx].strip()
+        # print(idx, scene_path)
         # print(idx, scene_path)
         data_json = json.load(open(scene_path, 'r'))
         frames = data_json["frames"]

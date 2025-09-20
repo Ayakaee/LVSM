@@ -29,6 +29,8 @@ def load_pretrained_checkpoint(model, checkpoint_path, config):
     state_dict = checkpoint["model"]
     if not config.training.use_compile:
         state_dict = {k.replace('_orig_mod.', '', 1): v for k, v in state_dict.items()}
+    else:
+        state_dict = {k if k.startswith('_orig_mod.') else '_orig_mod.' + k: v for k, v in state_dict.items()}
     
     # Load model state dict with strict=False to handle resolution changes
     if isinstance(model, DDP):
@@ -61,8 +63,9 @@ def create_finetune_config(base_config, pretrained_checkpoint_path):
     finetune_config = EasyDict(base_config.copy())
     
     # Update resolution-related settings
-    finetune_config.model.image_tokenizer.image_size = 512
-    finetune_config.model.target_pose_tokenizer.image_size = 512
+    if base_config.training.get('high_resolution', True):
+        finetune_config.model.image_tokenizer.image_size = 512
+        finetune_config.model.target_pose_tokenizer.image_size = 512
     
     # Update training parameters for finetuning
     finetune_config.training.lr = 1e-4  # Smaller learning rate for finetuning

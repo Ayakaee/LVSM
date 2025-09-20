@@ -11,9 +11,11 @@ from utils.metric_utils import export_results, summarize_evaluation
 import argparse
 import numpy as np
 import csv
+import shutil
 
 # Load config and read(override) arguments from CLI
 config = init_config()
+config.inference.extract_features = False
 config.training.num_views = config.training.num_input_views + config.training.num_target_views
 log_file = config.training.get("log_file", f'logs/{config.inference.checkpoint_dir.split("/")[-1]}_eval.log')
 logger = init_logging(log_file)
@@ -84,16 +86,17 @@ model.eval()
 if config.inference.extract_features and ddp_info.is_main_process:
     os.makedirs(config.inference.feature_save_dir, exist_ok=True)
 
-st, end = (204, 500000)
-step = 5
+st, end = (0,20)
+step = 1
 print(model_path)
 print(os.listdir(model_path))
-models = [name for name in os.listdir(model_path) if 'ckpt_t' not in name and 'ckpt' in name and st <= int(name.split('_')[1].split('.')[0]) // 100 <= end]
-models.sort(key=lambda x: int(x.split('_')[1].split('.')[0]))
+# models = [name for name in os.listdir(model_path) if 'ckpt_t' not in name and 'ckpt' in name and st <= int(name.split('_')[1].split('.')[0]) // 100 <= end]
+models = [name for name in os.listdir(model_path) if 'ckpt_t' in name and st <= int(name.split('t')[2].split('.')[0]) <= end]
+models.sort(key=lambda x: int(x.split('t')[2].split('.')[0]))
 models = models[::step]
 print(models)
-
-metric_file = os.path.join(model_path, 'metrics.csv')
+print(len(dataloader))
+metric_file = os.path.join(model_path, 'ametrics-eval.csv')
 print(metric_file)
 with open(metric_file, 'w', encoding='utf-8') as f:
     f.write(','.join(['model', 'psnr', 'lpips', 'ssim']) + '\n')
@@ -113,6 +116,8 @@ with torch.no_grad(), torch.autocast(
         model = DDP(model, device_ids=[ddp_info.local_rank])
         model.module.load_ckpt(os.path.join(model_path, name))
         model.eval()
+        if os.path.exists(os.path.join(config.inference.checkpoint_dir, 'visualize')):
+            shutil.rmtree(os.path.join(config.inference.checkpoint_dir, 'visualize'))
         datasampler.set_epoch(0)
         for batch_idx, batch in enumerate(dataloader):
             batch = {k: v.to(ddp_info.device) if type(v) == torch.Tensor else v for k, v in batch.items()}
@@ -122,10 +127,10 @@ with torch.no_grad(), torch.autocast(
                 
             if config.inference.get("render_video", False):
                 result= model.module.render_video(result, **config.inference.render_video_config)
-            export_results(result, config.inference.checkpoint_dir, compute_metrics=config.inference.get("compute_metrics"))
+            export_results(result, config.inference.checkpoint_dir, compute_metrics=config.inference.get("compute_metrics"), resized=config.inference.get('resize', False))
 
         metrics = summarize_evaluation(config.inference.checkpoint_dir)
-        metrics.insert(0, name.split('.')[0].split('_')[1][:-2])
+        metrics.insert(0, name.split('t')[2].split('.')[0][:-2])
         with open(metric_file, 'a', encoding='utf-8') as f:
             f.write(','.join(metrics) + '\n')
         

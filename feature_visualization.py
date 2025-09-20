@@ -197,7 +197,7 @@ if __name__ == "__main__":
     # 可视化多个层的特征
     model_name = '8.1-baseline'
     print("\n=== 可视化多个层特征 ===")
-    visualize_multiple_layers(f'extracted_features/{model_name}', f'feature_visualizations/{model_name}', batch_id=3) 
+    visualize_multiple_layers(f'extracted_features/{model_name}', f'feature_visualizations/{model_name}', batch_id=10) 
     
     organizer = FeatureVisualizationOrganizer(
         input_dir=f"feature_visualizations/{model_name}",
